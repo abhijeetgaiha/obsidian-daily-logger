@@ -1,5 +1,6 @@
 mod commands;
 mod config;
+mod draft;
 mod error;
 
 use commands::AppState;
@@ -13,6 +14,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::load_draft,
             commands::load_settings,
             commands::set_fallback,
             commands::submit_entry,
@@ -32,13 +34,12 @@ pub fn run() {
         .run(|app, event| {
             if let RunEvent::ExitRequested { api, .. } = event {
                 let state = app.state::<AppState>();
-                match commands::lock_session(&state.session) {
-                    Ok(mut session) => session.prepare_exit(),
-                    Err(error) => {
-                        api.prevent_exit();
-                        eprintln!("{}: {}", error.code, error.message);
-                    }
-                };
+                let result = commands::lock_session(&state.session)
+                    .and_then(|mut session| session.prepare_exit(&state.config_path, None));
+                if let Err(error) = result {
+                    api.prevent_exit();
+                    eprintln!("{}: {}", error.code, error.message);
+                }
             }
         });
 }

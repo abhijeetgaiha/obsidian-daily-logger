@@ -18,10 +18,11 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   const dragArea = root.querySelector<HTMLDivElement>(".drag-area")!;
   let settings: Settings | undefined;
   let busy = true;
+  let draftLoaded = false;
   let savedPath: string | undefined;
 
   function render() {
-    entry.readOnly = busy || savedPath !== undefined;
+    entry.readOnly = busy || !draftLoaded || savedPath !== undefined;
     checkbox.disabled = busy || settings === undefined || savedPath !== undefined;
     checkbox.checked = settings?.use_yesterday_if_today_missing ?? false;
     root.setAttribute("aria-busy", String(busy));
@@ -36,7 +37,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     busy = true;
     render();
     try {
-      await api.exit();
+      await api.exit(savedPath === undefined && draftLoaded ? entry.value : undefined);
     } catch (error) {
       showError(
         savedPath === undefined
@@ -45,7 +46,14 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
       );
       busy = false;
       render();
+      entry.focus();
     }
+  }
+
+  async function restoreDraft() {
+    entry.value = await api.loadDraft();
+    draftLoaded = true;
+    entry.setSelectionRange(entry.value.length, entry.value.length);
   }
 
   async function save() {
@@ -55,6 +63,14 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     message.className = "";
     render();
     try {
+      if (!draftLoaded) {
+        await restoreDraft();
+        message.textContent = "Draft loaded. Press Enter to save or Escape to keep it for later.";
+        busy = false;
+        render();
+        entry.focus();
+        return;
+      }
       settings = await api.loadSettings();
       const result = await api.submit(entry.value);
       savedPath = result.note_path;
@@ -111,16 +127,24 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   window.addEventListener("keydown", onKeyDown);
   render();
   entry.focus();
-  void api.loadSettings().then(
-    (loaded) => {
-      settings = loaded;
-    },
-    showError,
-  ).finally(() => {
+  async function initialize() {
+    const errors: string[] = [];
+    try {
+      await restoreDraft();
+    } catch (error) {
+      errors.push(`${errorMessage(error)} Press Enter to retry loading it.`);
+    }
+    try {
+      settings = await api.loadSettings();
+    } catch (error) {
+      errors.push(errorMessage(error));
+    }
+    if (errors.length) showError(errors.join("\n"));
     busy = false;
     render();
     entry.focus();
-  });
+  }
+  void initialize();
 
   return () => {
     window.removeEventListener("keydown", onKeyDown);

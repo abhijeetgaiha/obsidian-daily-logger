@@ -11,18 +11,20 @@ export interface SavedEntry {
 }
 
 export interface JournalApi {
+  loadDraft(): Promise<string>;
   loadSettings(): Promise<Settings>;
   setFallback(enabled: boolean): Promise<Settings>;
   submit(text: string): Promise<SavedEntry>;
-  exit(): Promise<void>;
+  exit(text?: string): Promise<void>;
   startDragging(): Promise<void>;
 }
 
 export const api: JournalApi = {
+  loadDraft: () => invoke<string>("load_draft"),
   loadSettings: () => invoke<Settings>("load_settings"),
   setFallback: (enabled) => invoke<Settings>("set_fallback", { enabled }),
   submit: (text) => invoke<SavedEntry>("submit_entry", { text }),
-  exit: () => invoke<void>("request_exit"),
+  exit: (text) => invoke<void>("request_exit", { text: text ?? null }),
   startDragging: () => getCurrentWindow().startDragging(),
 };
 

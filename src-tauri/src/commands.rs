@@ -1,5 +1,6 @@
 use crate::{
     config::{self, Settings},
+    draft,
     error::AppError,
 };
 use chrono::{DateTime, Local, TimeZone};
@@ -46,18 +47,34 @@ pub fn lock_session(session: &Mutex<Session>) -> Result<MutexGuard<'_, Session>,
 }
 
 impl Session {
-    pub fn prepare_exit(&mut self) {
+    pub fn prepare_exit(&mut self, path: &Path, text: Option<&str>) -> Result<(), AppError> {
+        if self.exiting {
+            return Ok(());
+        }
+        if self.saved {
+            draft::clear(path)?;
+        } else if let Some(text) = text {
+            draft::save(path, text)?;
+        }
         self.exiting = true;
+        Ok(())
+    }
+
+    fn check_active(&self) -> Result<(), AppError> {
+        if self.exiting {
+            Err(AppError::new("exiting", "The application is closing."))
+        } else {
+            Ok(())
+        }
     }
 
     fn check_writable(&self) -> Result<(), AppError> {
+        self.check_active()?;
         if self.saved {
             Err(AppError::new(
                 "already_saved",
                 "This entry was already saved. Close the window.",
             ))
-        } else if self.exiting {
-            Err(AppError::new("exiting", "The application is closing."))
         } else {
             Ok(())
         }
@@ -92,7 +109,7 @@ async fn operate<T: Send + 'static>(
     let path = state.config_path.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut session = lock_session(&session)?;
-        session.check_writable()?;
+        session.check_active()?;
         operation(&mut session, &path)
     })
     .await
@@ -105,13 +122,22 @@ async fn operate<T: Send + 'static>(
 }
 
 #[tauri::command]
+pub async fn load_draft(state: State<'_, AppState>) -> Result<String, AppError> {
+    operate(&state, |_, path| draft::load(path)).await
+}
+
+#[tauri::command]
 pub async fn load_settings(state: State<'_, AppState>) -> Result<Settings, AppError> {
     operate(&state, |_, path| Ok(config::load(path)?.settings(path))).await
 }
 
 #[tauri::command]
 pub async fn set_fallback(state: State<'_, AppState>, enabled: bool) -> Result<Settings, AppError> {
-    operate(&state, move |_, path| config::set_fallback(path, enabled)).await
+    operate(&state, move |session, path| {
+        session.check_writable()?;
+        config::set_fallback(path, enabled)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -127,14 +153,23 @@ pub async fn submit_entry(
 }
 
 pub fn exit(app: &AppHandle, state: &AppState) -> Result<(), AppError> {
-    lock_session(&state.session)?.prepare_exit();
+    lock_session(&state.session)?.prepare_exit(&state.config_path, None)?;
     app.exit(0);
     Ok(())
 }
 
 #[tauri::command]
-pub fn request_exit(app: AppHandle, state: State<'_, AppState>) -> Result<(), AppError> {
-    exit(&app, &state)
+pub async fn request_exit(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    text: Option<String>,
+) -> Result<(), AppError> {
+    operate(&state, move |session, path| {
+        session.prepare_exit(path, text.as_deref())
+    })
+    .await?;
+    app.exit(0);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -164,11 +199,13 @@ mod tests {
         )
         .unwrap();
         let mut session = Session::default();
+        draft::save(&path, "draft").unwrap();
         assert_eq!(
             session.save(&path, &moment, "draft").unwrap_err().code,
             "today_missing"
         );
         assert!(!session.saved);
+        assert_eq!(draft::load(&path).unwrap(), "draft");
         config::set_fallback(&path, true).unwrap();
         session.save(&path, &moment, "draft").unwrap();
         assert!(session.saved);
@@ -177,6 +214,10 @@ mod tests {
             "already_saved"
         );
         assert_eq!(fs::read(note).unwrap(), b"# Journal\n\n[1:02am] draft\n");
+        session
+            .prepare_exit(&path, Some("must not restore a logged entry"))
+            .unwrap();
+        assert_eq!(draft::load(&path).unwrap(), "");
     }
 
     #[test]
@@ -186,5 +227,33 @@ mod tests {
         assert!(matches!(lock_session(&state.session), Err(error) if error.code == "busy"));
         guard.exiting = true;
         assert_eq!(guard.check_writable().unwrap_err().code, "exiting");
+    }
+
+    #[test]
+    fn escape_persists_before_exit_and_storage_errors_block_exit() {
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path().join("config.json");
+        let mut session = Session::default();
+        session
+            .prepare_exit(&config, Some("unfinished\ntext"))
+            .unwrap();
+        assert!(session.exiting);
+        assert_eq!(draft::load(&config).unwrap(), "unfinished\ntext");
+        session.prepare_exit(&config, None).unwrap();
+        assert_eq!(draft::load(&config).unwrap(), "unfinished\ntext");
+        fs::remove_file(config.with_file_name("draft.txt")).unwrap();
+        fs::create_dir(config.with_file_name("draft.txt")).unwrap();
+        let mut session = Session::default();
+        assert!(session
+            .prepare_exit(&config, Some("keep in the window"))
+            .is_err());
+        assert!(!session.exiting);
+        session.saved = true;
+        assert!(session.prepare_exit(&config, None).is_err());
+        assert!(!session.exiting);
+        assert_eq!(session.check_writable().unwrap_err().code, "already_saved");
+        fs::remove_dir(config.with_file_name("draft.txt")).unwrap();
+        session.prepare_exit(&config, None).unwrap();
+        assert!(session.exiting);
     }
 }

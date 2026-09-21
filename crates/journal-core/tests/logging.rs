@@ -226,3 +226,11 @@ fn failed_replacement_cleans_up_and_never_removes_destination() {
     assert_eq!(fs::read(path.join("keep")).unwrap(), b"untouched");
     assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
 }
+
+#[test]
+fn atomic_note_replacement_still_requires_an_existing_destination() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("missing.md");
+    assert!(atomic_write(&path, b"must not create a missing note").is_err());
+    assert!(!path.exists());
+}

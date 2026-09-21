@@ -9,6 +9,7 @@ const initial: Settings = {
 
 function mockApi() {
   return {
+    loadDraft: vi.fn<JournalApi["loadDraft"]>().mockResolvedValue(""),
     loadSettings: vi.fn<JournalApi["loadSettings"]>().mockResolvedValue(initial),
     setFallback: vi.fn<JournalApi["setFallback"]>().mockImplementation(async (enabled) => ({
       ...initial, use_yesterday_if_today_missing: enabled,
@@ -59,6 +60,7 @@ describe("minimal journal window", () => {
     await flush();
     expect(api.submit).toHaveBeenCalledExactlyOnceWith("  first\nsecond  ");
     expect(api.exit).toHaveBeenCalledOnce();
+    expect(api.exit).toHaveBeenCalledWith(undefined);
     expect(entry.readOnly).toBe(true);
   });
 
@@ -71,14 +73,83 @@ describe("minimal journal window", () => {
     expect(api.submit).not.toHaveBeenCalled();
   });
 
-  it("Escape exits without submitting and ignores repeated Escape", async () => {
+  it("Escape persists exact draft text without submitting and ignores repeated Escape", async () => {
     const { api, entry } = await setup();
+    entry.value = "  unfinished\ntext  ";
     key(entry, "Escape", { repeat: true });
     expect(api.exit).not.toHaveBeenCalled();
     key(entry, "Escape");
     await flush();
     expect(api.exit).toHaveBeenCalledOnce();
+    expect(api.exit).toHaveBeenCalledWith("  unfinished\ntext  ");
     expect(api.submit).not.toHaveBeenCalled();
+  });
+
+  it("restores the draft even if vault configuration is invalid", async () => {
+    const api = mockApi();
+    api.loadDraft.mockResolvedValue("  pending\nentry  ");
+    api.loadSettings.mockRejectedValue(new Error("Fix configuration"));
+    const { entry, message } = await setup(api);
+    expect(entry.value).toBe("  pending\nentry  ");
+    expect(entry.readOnly).toBe(false);
+    expect(entry.selectionStart).toBe(entry.value.length);
+    expect(message.textContent).toBe("Fix configuration");
+    key(entry, "Escape");
+    await flush();
+    expect(api.exit).toHaveBeenCalledWith("  pending\nentry  ");
+  });
+
+  it("keeps the draft editable when Escape cannot persist it", async () => {
+    const api = mockApi();
+    api.exit.mockRejectedValue(new Error("Could not save draft"));
+    const { entry, message } = await setup(api);
+    entry.value = "keep this";
+    key(entry, "Escape");
+    await flush();
+    expect(entry.value).toBe("keep this");
+    expect(entry.readOnly).toBe(false);
+    expect(message.textContent).toBe("Could not save draft");
+    api.exit.mockResolvedValue(undefined);
+    key(entry, "Escape");
+    await flush();
+    expect(api.exit).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears a previously saved draft when an empty text box is dismissed", async () => {
+    const api = mockApi();
+    api.loadDraft.mockResolvedValue("old draft");
+    const { entry } = await setup(api);
+    entry.value = "";
+    key(entry, "Escape");
+    await flush();
+    expect(api.exit).toHaveBeenCalledWith("");
+  });
+
+  it("does not overwrite an unreadable draft on Escape", async () => {
+    const api = mockApi();
+    api.loadDraft.mockRejectedValue(new Error("Cannot read draft"));
+    const { entry, message } = await setup(api);
+    expect(entry.readOnly).toBe(true);
+    expect(message.textContent).toContain("Cannot read draft");
+    key(entry, "Escape");
+    await flush();
+    expect(api.exit).toHaveBeenCalledWith(undefined);
+    expect(api.submit).not.toHaveBeenCalled();
+  });
+
+  it("allows retrying a failed draft load without submitting it immediately", async () => {
+    const api = mockApi();
+    api.loadDraft.mockRejectedValue(new Error("Cannot read draft"));
+    const { entry } = await setup(api);
+    api.loadDraft.mockResolvedValue("recovered");
+    key(entry, "Enter");
+    await flush();
+    expect(entry.value).toBe("recovered");
+    expect(entry.readOnly).toBe(false);
+    expect(api.submit).not.toHaveBeenCalled();
+    key(entry, "Enter");
+    await flush();
+    expect(api.submit).toHaveBeenCalledExactlyOnceWith("recovered");
   });
 
   it("retains the draft and displays IPC errors as text", async () => {
@@ -185,6 +256,7 @@ describe("minimal journal window", () => {
     key(entry, "Escape");
     await flush();
     expect(api.exit).toHaveBeenCalledTimes(2);
+    expect(api.exit).toHaveBeenLastCalledWith(undefined);
   });
 
   it("formats unknown errors explicitly", () => {

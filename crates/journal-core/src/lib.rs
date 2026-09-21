@@ -138,8 +138,24 @@ pub fn build_updated_note(data: &[u8], entry: &str) -> Result<Vec<u8>, LogError>
 }
 
 pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
-    let permissions = fs::metadata(path)?.permissions();
-    if permissions.readonly() {
+    atomic_write_with_permissions(path, data, Some(fs::metadata(path)?.permissions()))
+}
+
+pub fn atomic_write_or_create(path: &Path, data: &[u8]) -> io::Result<()> {
+    let permissions = match fs::metadata(path) {
+        Ok(metadata) => Some(metadata.permissions()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    atomic_write_with_permissions(path, data, permissions)
+}
+
+fn atomic_write_with_permissions(
+    path: &Path,
+    data: &[u8],
+    permissions: Option<fs::Permissions>,
+) -> io::Result<()> {
+    if permissions.as_ref().is_some_and(fs::Permissions::readonly) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "the destination is read-only",
@@ -154,7 +170,9 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
         .tempfile_in(parent)?;
     temporary.write_all(data)?;
     temporary.as_file().sync_all()?;
-    temporary.as_file().set_permissions(permissions)?;
+    if let Some(permissions) = permissions {
+        temporary.as_file().set_permissions(permissions)?;
+    }
     temporary.persist(path).map_err(|error| error.error)?;
     Ok(())
 }

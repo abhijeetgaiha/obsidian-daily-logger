@@ -9,13 +9,27 @@ Apple Silicon. No Python, Node, or development server is needed at runtime.
 Launch normally and type into the focused text box.
 
 - **Enter** saves and exits; **Shift+Enter** inserts a newline.
-- **Escape** exits without saving. Closing is blocked during an active operation.
+- **Escape** keeps the current text as a draft and exits without logging it.
+  The draft is restored on the next launch. Closing is blocked during an active operation.
 - **Use yesterday if today is missing** is initially unchecked. Changes persist
   immediately. Today always takes priority.
 - Errors retain the draft. Failed preference writes restore the saved checkbox.
 
 There is no tray, global shortcut, background mode, folder picker, or command-line
 logging interface. Drag the narrow empty strip above the text box to move it.
+
+Drafts are stored as UTF-8 plaintext in `draft.txt` beside `config.json`, not in
+the journal. They work even when vault configuration is missing or invalid.
+Escape preserves all text, including whitespace and line breaks; dismissing an
+empty text box removes the previous draft. A successful journal save clears the
+draft before exiting. If saving or clearing the draft fails, the window stays
+open with an error; a journal entry that has already been saved cannot be
+submitted again. Fix the storage problem and press Escape to retry closing.
+
+If a draft cannot be read at startup, editing is blocked to avoid overwriting it.
+Correct the storage problem and press Enter to reload, or Escape to exit leaving
+the file untouched. Only Escape persists the latest edits: operating-system
+close/quit and forced termination do not update an unfinished draft.
 
 ### Configure the journal folder
 
@@ -75,8 +89,9 @@ explicit configuration replaces its script-directory default.
 
 **Limitations:** atomic replacement prevents partial contents, not conflicts with
 simultaneous edits by Obsidian, synchronization software, or another app instance.
-Avoid editing the same note during a save. Drafts exist only in memory; Escape
-discards them. After an unexpected IPC/worker failure, check the note before
+Avoid editing the same note during a save, and use one logger window at a time:
+there is one shared saved draft per user. Drafts are not continuously autosaved.
+After an unexpected IPC/worker failure, check the note before
 relaunching and retrying.
 
 ## Build from source
