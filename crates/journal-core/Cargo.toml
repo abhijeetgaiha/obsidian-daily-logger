@@ -1,0 +1,10 @@
+[package]
+name = "journal-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chrono = "0.4"
+regex = "1"
+tempfile = "3"
+thiserror = "2"
