@@ -1,9 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+export interface NoteLabel {
+  name: string;
+  is_yesterday: boolean;
+}
+
 export interface Settings {
   config_path: string;
   use_yesterday_if_today_missing: boolean;
+  note: NoteLabel | null;
 }
 
 export interface SavedEntry {

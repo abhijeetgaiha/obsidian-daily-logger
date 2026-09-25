@@ -82,6 +82,29 @@ pub fn select_daily_note(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocatedNote {
+    pub path: PathBuf,
+    pub is_yesterday: bool,
+}
+
+/// Finds today's note, or yesterday's if today's is missing, regardless of the fallback setting.
+pub fn locate_daily_note(root: &Path, today: NaiveDate) -> Result<Option<LocatedNote>, LogError> {
+    let path = daily_note_path(root, today);
+    if is_file(&path)? {
+        return Ok(Some(LocatedNote {
+            path,
+            is_yesterday: false,
+        }));
+    }
+    let yesterday = today.pred_opt().ok_or(LogError::DateRange)?;
+    let path = daily_note_path(root, yesterday);
+    Ok(is_file(&path)?.then_some(LocatedNote {
+        path,
+        is_yesterday: true,
+    }))
+}
+
 pub fn format_timestamp<Tz: TimeZone>(moment: &DateTime<Tz>) -> String {
     let hour = moment.hour() % 12;
     format!(

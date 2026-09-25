@@ -5,6 +5,7 @@ import { mountJournal } from "./ui";
 const initial: Settings = {
   config_path: "test-config.json",
   use_yesterday_if_today_missing: false,
+  note: { name: "2026-09-26", is_yesterday: false },
 };
 
 function mockApi() {
@@ -40,6 +41,7 @@ async function setup(api = mockApi()) {
     entry: root.querySelector<HTMLTextAreaElement>("#entry")!,
     checkbox: root.querySelector<HTMLInputElement>("#fallback")!,
     message: root.querySelector<HTMLParagraphElement>("#message")!,
+    noteName: root.querySelector<HTMLSpanElement>("#note-name")!,
   };
 }
 
@@ -257,6 +259,71 @@ describe("minimal journal window", () => {
     await flush();
     expect(api.exit).toHaveBeenCalledTimes(2);
     expect(api.exit).toHaveBeenLastCalledWith(undefined);
+  });
+
+  it("shows today's note name in the status row", async () => {
+    const { noteName } = await setup();
+    expect(noteName.textContent).toBe("2026-09-26");
+    expect(noteName.classList.contains("inactive")).toBe(false);
+    expect(noteName.title).toBe("");
+  });
+
+  it("shows yesterday's note dimmed until the checkbox is ticked", async () => {
+    const api = mockApi();
+    const yesterday = { name: "2026-09-25", is_yesterday: true };
+    api.loadSettings.mockResolvedValue({ ...initial, note: yesterday });
+    api.setFallback.mockImplementation(async (enabled) => ({
+      ...initial, use_yesterday_if_today_missing: enabled, note: yesterday,
+    }));
+    const { checkbox, noteName } = await setup(api);
+    expect(noteName.textContent).toBe("2026-09-25");
+    expect(noteName.classList.contains("inactive")).toBe(true);
+    expect(noteName.title).toContain("checkbox");
+    checkbox.checked = true;
+    checkbox.dispatchEvent(new Event("change"));
+    await flush();
+    expect(noteName.textContent).toBe("2026-09-25");
+    expect(noteName.classList.contains("inactive")).toBe(false);
+    expect(noteName.title).toBe("");
+  });
+
+  it("shows No File Selected when no note or configuration is available", async () => {
+    const api = mockApi();
+    api.loadSettings.mockResolvedValue({ ...initial, note: null });
+    expect((await setup(api)).noteName.textContent).toBe("No File Selected");
+    cleanups.pop()?.();
+    document.body.replaceChildren();
+    api.loadSettings.mockRejectedValue(new Error("Fix configuration"));
+    const { noteName } = await setup(api);
+    expect(noteName.textContent).toBe("No File Selected");
+    expect(noteName.classList.contains("inactive")).toBe(false);
+  });
+
+  it("refreshes the note name on each save attempt", async () => {
+    const api = mockApi();
+    api.submit.mockRejectedValue(new Error("Missing note"));
+    const { entry, noteName } = await setup(api);
+    entry.value = "draft";
+    api.loadSettings.mockResolvedValue({
+      ...initial, note: { name: "2026-09-27", is_yesterday: false },
+    });
+    key(entry, "Enter");
+    await flush();
+    expect(noteName.textContent).toBe("2026-09-27");
+    api.loadSettings.mockRejectedValue(new Error("Fix config.json"));
+    key(entry, "Enter");
+    await flush();
+    expect(noteName.textContent).toBe("No File Selected");
+  });
+
+  it("renders the note name as text", async () => {
+    const api = mockApi();
+    api.loadSettings.mockResolvedValue({
+      ...initial, note: { name: "<b>note</b>", is_yesterday: false },
+    });
+    const { noteName } = await setup(api);
+    expect(noteName.textContent).toBe("<b>note</b>");
+    expect(noteName.children).toHaveLength(0);
   });
 
   it("formats unknown errors explicitly", () => {

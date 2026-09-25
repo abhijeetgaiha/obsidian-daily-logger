@@ -1,7 +1,7 @@
 use chrono::{FixedOffset, NaiveDate, TimeZone};
 use journal_core::{
     append_entry, atomic_write, build_updated_note, daily_note_path, format_timestamp,
-    select_daily_note, trim_entry, LogError,
+    locate_daily_note, select_daily_note, trim_entry, LocatedNote, LogError,
 };
 use std::{fs, path::Path};
 
@@ -44,6 +44,36 @@ fn selection_policy_and_calendar_boundaries() {
                 current
             );
         }
+    }
+}
+
+#[test]
+fn location_prefers_today_then_yesterday_and_ignores_directories() {
+    for (today, yesterday) in [
+        (date(2026, 1, 1), date(2025, 12, 31)),
+        (date(2026, 3, 1), date(2026, 2, 28)),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        assert_eq!(locate_daily_note(root.path(), today).unwrap(), None);
+        fs::create_dir_all(daily_note_path(root.path(), today)).unwrap();
+        assert_eq!(locate_daily_note(root.path(), today).unwrap(), None);
+        let previous = note(root.path(), yesterday, b"# Journal\n");
+        assert_eq!(
+            locate_daily_note(root.path(), today).unwrap(),
+            Some(LocatedNote {
+                path: previous,
+                is_yesterday: true,
+            })
+        );
+        fs::remove_dir(daily_note_path(root.path(), today)).unwrap();
+        let current = note(root.path(), today, b"# Journal\n");
+        assert_eq!(
+            locate_daily_note(root.path(), today).unwrap(),
+            Some(LocatedNote {
+                path: current,
+                is_yesterday: false,
+            })
+        );
     }
 }
 

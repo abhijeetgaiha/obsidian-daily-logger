@@ -41,14 +41,32 @@ textarea {
 textarea:focus-visible { outline: 1px solid #70899e; }
 input:focus-visible { outline: 2px solid #537a99; }
 
-.fallback {
+.status-row {
   display: flex;
   align-items: center;
-  gap: 5px;
+  justify-content: space-between;
+  gap: 12px;
   margin-top: 10px;
   font-size: 12px;
+}
+
+.fallback {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
   user-select: none;
 }
+
+#note-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: none;
+}
+
+#note-name.inactive { opacity: 0.5; }
 
 input { accent-color: #537a99; }
 

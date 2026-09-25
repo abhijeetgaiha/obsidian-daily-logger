@@ -1,4 +1,5 @@
 use crate::error::AppError;
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -13,10 +14,17 @@ pub struct Config {
     pub use_yesterday_if_today_missing: bool,
 }
 
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub struct NoteLabel {
+    pub name: String,
+    pub is_yesterday: bool,
+}
+
 #[derive(Debug, Serialize)]
 pub struct Settings {
     pub config_path: String,
     pub use_yesterday_if_today_missing: bool,
+    pub note: Option<NoteLabel>,
 }
 
 fn error(path: &Path, detail: impl std::fmt::Display) -> AppError {
@@ -46,26 +54,75 @@ pub fn load(path: &Path) -> Result<Config, AppError> {
 }
 
 impl Config {
-    pub fn settings(&self, path: &Path) -> Settings {
+    pub fn settings(&self, path: &Path, today: NaiveDate) -> Settings {
         Settings {
             config_path: path.display().to_string(),
             use_yesterday_if_today_missing: self.use_yesterday_if_today_missing,
+            note: self.note_label(today),
         }
+    }
+
+    // Inspection failures are displayed as no note; saving reports the underlying error.
+    fn note_label(&self, today: NaiveDate) -> Option<NoteLabel> {
+        let note = journal_core::locate_daily_note(&self.vault_root, today).ok()??;
+        Some(NoteLabel {
+            name: note.path.file_stem()?.to_string_lossy().into_owned(),
+            is_yesterday: note.is_yesterday,
+        })
     }
 }
 
-pub fn set_fallback(path: &Path, enabled: bool) -> Result<Settings, AppError> {
+pub fn set_fallback(path: &Path, enabled: bool, today: NaiveDate) -> Result<Settings, AppError> {
     let mut config = load(path)?;
     config.use_yesterday_if_today_missing = enabled;
     let mut bytes = serde_json::to_vec_pretty(&config).map_err(|detail| error(path, detail))?;
     bytes.push(b'\n');
     journal_core::atomic_write(path, &bytes).map_err(|detail| error(path, detail))?;
-    Ok(config.settings(path))
+    Ok(config.settings(path, today))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn today() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 3, 1).unwrap()
+    }
+
+    #[test]
+    fn settings_label_the_located_note_independently_of_the_fallback() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.json");
+        write_config(&path, root.path());
+        let label = |settings: Settings| settings.note;
+        assert_eq!(label(load(&path).unwrap().settings(&path, today())), None);
+        let note = |date: NaiveDate| {
+            let note = journal_core::daily_note_path(root.path(), date);
+            fs::create_dir_all(note.parent().unwrap()).unwrap();
+            fs::write(note, b"# Journal\n").unwrap();
+        };
+        note(today().pred_opt().unwrap());
+        let yesterday = Some(NoteLabel {
+            name: "2026-02-28".into(),
+            is_yesterday: true,
+        });
+        assert_eq!(
+            label(load(&path).unwrap().settings(&path, today())),
+            yesterday
+        );
+        assert_eq!(
+            label(set_fallback(&path, true, today()).unwrap()),
+            yesterday
+        );
+        note(today());
+        assert_eq!(
+            label(set_fallback(&path, false, today()).unwrap()),
+            Some(NoteLabel {
+                name: "2026-03-01".into(),
+                is_yesterday: false,
+            })
+        );
+    }
 
     pub fn write_config(path: &Path, root: &Path) {
         fs::write(
@@ -84,11 +141,11 @@ mod tests {
         let path = root.path().join("config.json");
         write_config(&path, root.path());
         assert!(!load(&path).unwrap().use_yesterday_if_today_missing);
-        set_fallback(&path, true).unwrap();
+        set_fallback(&path, true, today()).unwrap();
         let restored = load(&path).unwrap();
         assert!(restored.use_yesterday_if_today_missing);
         assert_eq!(restored.vault_root, root.path());
-        set_fallback(&path, false).unwrap();
+        set_fallback(&path, false, today()).unwrap();
         assert!(!load(&path).unwrap().use_yesterday_if_today_missing);
     }
 
@@ -112,7 +169,7 @@ mod tests {
         ] {
             fs::write(&path, input).unwrap();
             assert!(load(&path).is_err());
-            assert!(set_fallback(&path, true).is_err());
+            assert!(set_fallback(&path, true, today()).is_err());
             assert_eq!(fs::read_to_string(&path).unwrap(), input);
         }
         write_config(&path, &root.path().join("missing"));
@@ -129,13 +186,13 @@ mod tests {
         write_config(&path, root.path());
         load(&path).unwrap();
         write_config(&path, other.path());
-        set_fallback(&path, true).unwrap();
+        set_fallback(&path, true, today()).unwrap();
         assert_eq!(load(&path).unwrap().vault_root, other.path());
         let original = fs::metadata(&path).unwrap().permissions();
         let mut readonly = original.clone();
         readonly.set_readonly(true);
         fs::set_permissions(&path, readonly).unwrap();
-        let result = set_fallback(&path, false);
+        let result = set_fallback(&path, false, today());
         fs::set_permissions(&path, original).unwrap();
         assert!(result.is_err());
         assert!(load(&path).unwrap().use_yesterday_if_today_missing);

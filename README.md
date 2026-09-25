@@ -13,6 +13,12 @@ Launch normally and type into the focused text box.
   The draft is restored on the next launch. Closing is blocked during an active operation.
 - **Use yesterday if today is missing** is initially unchecked. Changes persist
   immediately. Today always takes priority.
+- The bottom-right corner shows the daily note's file name without its path or
+  extension, e.g. `2026-09-26`. If today's note is missing, yesterday's name is
+  shown even while the checkbox is unchecked, dimmed to show it will not be used
+  until the box is ticked. When neither note exists, or the configuration is
+  invalid, it shows **No File Selected**. The name refreshes at startup, after
+  checkbox changes, and on each Enter.
 - Errors retain the draft. Failed preference writes restore the saved checkbox.
 
 There is no tray, global shortcut, background mode, folder picker, or command-line

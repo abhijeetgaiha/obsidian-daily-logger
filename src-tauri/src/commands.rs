@@ -128,14 +128,19 @@ pub async fn load_draft(state: State<'_, AppState>) -> Result<String, AppError> 
 
 #[tauri::command]
 pub async fn load_settings(state: State<'_, AppState>) -> Result<Settings, AppError> {
-    operate(&state, |_, path| Ok(config::load(path)?.settings(path))).await
+    let today = Local::now().date_naive();
+    operate(&state, move |_, path| {
+        Ok(config::load(path)?.settings(path, today))
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn set_fallback(state: State<'_, AppState>, enabled: bool) -> Result<Settings, AppError> {
+    let today = Local::now().date_naive();
     operate(&state, move |session, path| {
         session.check_writable()?;
-        config::set_fallback(path, enabled)
+        config::set_fallback(path, enabled, today)
     })
     .await
 }
@@ -206,7 +211,7 @@ mod tests {
         );
         assert!(!session.saved);
         assert_eq!(draft::load(&path).unwrap(), "draft");
-        config::set_fallback(&path, true).unwrap();
+        config::set_fallback(&path, true, moment.date_naive()).unwrap();
         session.save(&path, &moment, "draft").unwrap();
         assert!(session.saved);
         assert_eq!(

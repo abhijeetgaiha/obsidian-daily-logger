@@ -1,4 +1,4 @@
-import { errorMessage, type JournalApi, type Settings } from "./api";
+import { errorMessage, type JournalApi, type NoteLabel, type Settings } from "./api";
 
 export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   root.innerHTML = `
@@ -6,17 +6,22 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     <textarea id="entry" aria-label="Journal entry"
       placeholder="Write a journal entry..." spellcheck="true"
       aria-describedby="message"></textarea>
-    <label class="fallback">
-      <input id="fallback" type="checkbox" />
-      Use yesterday if today is missing
-    </label>
+    <div class="status-row">
+      <label class="fallback">
+        <input id="fallback" type="checkbox" />
+        Use yesterday if today is missing
+      </label>
+      <span id="note-name"></span>
+    </div>
     <p id="message" role="status" aria-live="polite"></p>
   `;
   const entry = root.querySelector<HTMLTextAreaElement>("#entry")!;
   const checkbox = root.querySelector<HTMLInputElement>("#fallback")!;
+  const noteName = root.querySelector<HTMLSpanElement>("#note-name")!;
   const message = root.querySelector<HTMLParagraphElement>("#message")!;
   const dragArea = root.querySelector<HTMLDivElement>(".drag-area")!;
   let settings: Settings | undefined;
+  let note: NoteLabel | undefined;
   let busy = true;
   let draftLoaded = false;
   let savedPath: string | undefined;
@@ -25,7 +30,21 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     entry.readOnly = busy || !draftLoaded || savedPath !== undefined;
     checkbox.disabled = busy || settings === undefined || savedPath !== undefined;
     checkbox.checked = settings?.use_yesterday_if_today_missing ?? false;
+    const inactive = note?.is_yesterday === true && !checkbox.checked;
+    noteName.textContent = note?.name ?? "No File Selected";
+    noteName.classList.toggle("inactive", inactive);
+    noteName.title = inactive ? "Yesterday's note is used only when the checkbox is ticked." : "";
     root.setAttribute("aria-busy", String(busy));
+  }
+
+  async function reloadSettings() {
+    try {
+      settings = await api.loadSettings();
+      note = settings.note ?? undefined;
+    } catch (error) {
+      note = undefined;
+      throw error;
+    }
   }
 
   function showError(error: unknown) {
@@ -71,7 +90,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
         entry.focus();
         return;
       }
-      settings = await api.loadSettings();
+      await reloadSettings();
       const result = await api.submit(entry.value);
       savedPath = result.note_path;
     } catch (error) {
@@ -93,6 +112,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     render();
     try {
       settings = await api.setFallback(enabled);
+      note = settings.note ?? undefined;
     } catch (error) {
       showError(error);
     } finally {
@@ -135,7 +155,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
       errors.push(`${errorMessage(error)} Press Enter to retry loading it.`);
     }
     try {
-      settings = await api.loadSettings();
+      await reloadSettings();
     } catch (error) {
       errors.push(errorMessage(error));
     }
