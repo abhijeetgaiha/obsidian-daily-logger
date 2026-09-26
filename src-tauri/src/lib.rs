@@ -16,6 +16,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::load_draft,
+            commands::save_draft,
             commands::load_settings,
             commands::set_fallback,
             commands::read_settings_form,
@@ -28,8 +29,8 @@ pub fn run() {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let app = window.app_handle();
-                if let Err(error) = commands::exit(app, &app.state::<AppState>()) {
-                    eprintln!("{}: {}", error.code, error.message);
+                if commands::request_os_exit(app, &app.state::<AppState>()) {
+                    app.exit(0);
                 }
             }
         })
@@ -37,12 +38,8 @@ pub fn run() {
         .expect("error while building the application")
         .run(|app, event| {
             if let RunEvent::ExitRequested { api, .. } = event {
-                let state = app.state::<AppState>();
-                let result = commands::lock_session(&state.session)
-                    .and_then(|mut session| session.prepare_exit(&state.config_path, None));
-                if let Err(error) = result {
+                if !commands::request_os_exit(app, &app.state::<AppState>()) {
                     api.prevent_exit();
-                    eprintln!("{}: {}", error.code, error.message);
                 }
             }
         });

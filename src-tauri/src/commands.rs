@@ -7,9 +7,13 @@ use chrono::{DateTime, Local, NaiveDate, TimeZone};
 use serde::Serialize;
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard, TryLockError},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, MutexGuard, TryLockError,
+    },
+    time::Duration,
 };
-use tauri::{AppHandle, State, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
 #[derive(Default)]
@@ -21,13 +25,19 @@ pub struct Session {
 pub struct AppState {
     pub config_path: PathBuf,
     pub session: Arc<Mutex<Session>>,
+    /// Set when an OS close/quit was forwarded to the webview and not yet answered.
+    close_pending: AtomicBool,
 }
+
+/// How long the webview has to answer an OS close/quit before the app exits without it.
+const CLOSE_FALLBACK: Duration = Duration::from_secs(3);
 
 impl AppState {
     pub fn new(config_path: PathBuf) -> Self {
         Self {
             config_path,
             session: Arc::new(Mutex::new(Session::default())),
+            close_pending: AtomicBool::new(false),
         }
     }
 }
@@ -79,6 +89,11 @@ impl Session {
         } else {
             Ok(())
         }
+    }
+
+    fn save_draft(&self, path: &Path, text: &str) -> Result<(), AppError> {
+        self.check_writable()?;
+        draft::save(path, text)
     }
 
     fn save_settings(
@@ -138,6 +153,11 @@ fn worker_failed() -> AppError {
 #[tauri::command]
 pub async fn load_draft(state: State<'_, AppState>) -> Result<String, AppError> {
     operate(&state, |_, path| draft::load(path)).await
+}
+
+#[tauri::command]
+pub async fn save_draft(state: State<'_, AppState>, text: String) -> Result<(), AppError> {
+    operate(&state, move |session, path| session.save_draft(path, &text)).await
 }
 
 #[tauri::command]
@@ -231,12 +251,44 @@ pub fn exit(app: &AppHandle, state: &AppState) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Handles an OS close or quit. Returns whether the app may exit immediately.
+///
+/// Unless the session is already exiting, the webview is asked to save the latest text and
+/// exit via `request_exit`. If it does not answer in time, the app exits with the last
+/// saved draft. Exiting stays blocked while another operation is running.
+pub fn request_os_exit(app: &AppHandle, state: &AppState) -> bool {
+    match lock_session(&state.session) {
+        Ok(session) if session.exiting => return true,
+        Ok(_) => {}
+        Err(error) => {
+            eprintln!("{}: {}", error.code, error.message);
+            return false;
+        }
+    }
+    state.close_pending.store(true, Ordering::SeqCst);
+    if let Err(error) = app.emit("close-requested", ()) {
+        eprintln!("close_event: {error}");
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(CLOSE_FALLBACK);
+        let state = app.state::<AppState>();
+        if state.close_pending.swap(false, Ordering::SeqCst) {
+            if let Err(error) = exit(&app, &state) {
+                eprintln!("{}: {}", error.code, error.message);
+            }
+        }
+    });
+    false
+}
+
 #[tauri::command]
 pub async fn request_exit(
     app: AppHandle,
     state: State<'_, AppState>,
     text: Option<String>,
 ) -> Result<(), AppError> {
+    state.close_pending.store(false, Ordering::SeqCst);
     operate(&state, move |session, path| {
         session.prepare_exit(path, text.as_deref())
     })
@@ -386,5 +438,25 @@ mod tests {
             fs::read_to_string(note).unwrap(),
             "# Day\n## Log\nold\n\n[1:05pm] entry\n\n### Later\n"
         );
+    }
+
+    #[test]
+    fn autosave_writes_and_clears_the_draft_until_the_session_ends() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.json");
+        let mut session = Session::default();
+        session.save_draft(&path, "  partial\nline ").unwrap();
+        assert_eq!(draft::load(&path).unwrap(), "  partial\nline ");
+        session.save_draft(&path, "").unwrap();
+        assert!(!path.with_file_name("draft.txt").exists());
+        session.save_draft(&path, "kept").unwrap();
+        session.saved = true;
+        let error = session.save_draft(&path, "after logging").unwrap_err();
+        assert_eq!(error.code, "already_saved");
+        session.saved = false;
+        session.exiting = true;
+        let error = session.save_draft(&path, "while exiting").unwrap_err();
+        assert_eq!(error.code, "exiting");
+        assert_eq!(draft::load(&path).unwrap(), "kept");
     }
 }

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { AUTOSAVE_DELAY_MS, AUTOSAVE_MAX_WAIT_MS } from "./autosave";
 import {
   errorMessage, type FormResult, type JournalApi, type SavedEntry, type Settings,
 } from "./api";
@@ -19,9 +20,19 @@ const validForm: FormResult = {
   issue: null,
 };
 
+let closeRequested: (() => void) | undefined;
+const unlistenClose = vi.fn();
+
 function mockApi() {
   return {
     loadDraft: vi.fn<JournalApi["loadDraft"]>().mockResolvedValue(""),
+    saveDraft: vi.fn<JournalApi["saveDraft"]>().mockResolvedValue(undefined),
+    onCloseRequested: vi.fn<JournalApi["onCloseRequested"]>().mockImplementation(
+      async (handler) => {
+        closeRequested = handler;
+        return unlistenClose;
+      },
+    ),
     loadSettings: vi.fn<JournalApi["loadSettings"]>().mockResolvedValue(initial),
     setFallback: vi.fn<JournalApi["setFallback"]>().mockImplementation(async (enabled) => ({
       ...initial, use_yesterday_if_today_missing: enabled,
@@ -41,6 +52,8 @@ const cleanups: (() => void)[] = [];
 afterEach(() => {
   cleanups.splice(0).forEach((cleanup) => cleanup());
   document.body.innerHTML = "";
+  closeRequested = undefined;
+  vi.useRealTimers();
 });
 
 async function flush() {
@@ -71,7 +84,23 @@ async function setup(api = mockApi()) {
     dialogMessage: root.querySelector<HTMLParagraphElement>("#settings-message")!,
     saveButton: root.querySelector<HTMLButtonElement>("#settings-save")!,
     cancelButton: root.querySelector<HTMLButtonElement>("#settings-cancel")!,
+    notice: root.querySelector<HTMLSpanElement>("#autosave")!,
   };
+}
+
+function type(entry: HTMLTextAreaElement, value: string) {
+  entry.value = value;
+  entry.dispatchEvent(new Event("input"));
+}
+
+async function tick(ms = 0) {
+  await vi.advanceTimersByTimeAsync(ms);
+}
+
+async function setupWithFakeTimers(api = mockApi()) {
+  const view = await setup(api);
+  vi.useFakeTimers();
+  return view;
 }
 
 async function openSettings(api = mockApi()) {
@@ -627,5 +656,203 @@ describe("minimal journal window", () => {
   it("formats unknown errors explicitly", () => {
     expect(errorMessage("Disconnected")).toBe("Disconnected");
     expect(errorMessage(null)).toContain("Unexpected application error");
+  });
+});
+
+describe("draft autosave", () => {
+  it("saves 1 s after typing pauses and skips unchanged text", async () => {
+    const api = mockApi();
+    api.loadDraft.mockResolvedValue("restored");
+    const { entry, notice } = await setupWithFakeTimers(api);
+    type(entry, "restored");
+    await tick(AUTOSAVE_DELAY_MS * 2);
+    expect(api.saveDraft).not.toHaveBeenCalled();
+    type(entry, "restored and more");
+    await tick(AUTOSAVE_DELAY_MS - 1);
+    type(entry, "restored and more text");
+    await tick(AUTOSAVE_DELAY_MS - 1);
+    expect(api.saveDraft).not.toHaveBeenCalled();
+    await tick(1);
+    expect(api.saveDraft).toHaveBeenCalledExactlyOnceWith("restored and more text");
+    expect(notice.textContent).toBe("Draft saved");
+    await tick(1500);
+    expect(notice.textContent).toBe("");
+    entry.dispatchEvent(new Event("input"));
+    await tick(AUTOSAVE_DELAY_MS);
+    expect(api.saveDraft).toHaveBeenCalledOnce();
+  });
+
+  it("saves at least every 10 s during continuous typing", async () => {
+    const api = mockApi();
+    const { entry } = await setupWithFakeTimers(api);
+    for (let elapsed = 0; elapsed < AUTOSAVE_MAX_WAIT_MS; elapsed += 500) {
+      type(entry, `text ${elapsed}`);
+      await tick(500);
+    }
+    expect(api.saveDraft).toHaveBeenCalledOnce();
+    expect(api.saveDraft).toHaveBeenCalledWith(`text ${AUTOSAVE_MAX_WAIT_MS - 500}`);
+  });
+
+  it("autosaves an emptied text box so the old draft is cleared", async () => {
+    const api = mockApi();
+    api.loadDraft.mockResolvedValue("old");
+    const { entry } = await setupWithFakeTimers(api);
+    type(entry, "");
+    await tick(AUTOSAVE_DELAY_MS);
+    expect(api.saveDraft).toHaveBeenCalledExactlyOnceWith("");
+  });
+
+  it("flushes immediately when the window loses focus", async () => {
+    const api = mockApi();
+    const { entry } = await setupWithFakeTimers(api);
+    type(entry, "focus lost");
+    window.dispatchEvent(new Event("blur"));
+    await tick();
+    expect(api.saveDraft).toHaveBeenCalledExactlyOnceWith("focus lost");
+    await tick(AUTOSAVE_MAX_WAIT_MS);
+    expect(api.saveDraft).toHaveBeenCalledOnce();
+  });
+
+  it("never autosaves over a draft that could not be loaded", async () => {
+    const api = mockApi();
+    api.loadDraft.mockRejectedValue(new Error("Cannot read draft"));
+    const { entry } = await setupWithFakeTimers(api);
+    type(entry, "typed anyway");
+    window.dispatchEvent(new Event("blur"));
+    await tick(AUTOSAVE_MAX_WAIT_MS);
+    expect(api.saveDraft).not.toHaveBeenCalled();
+  });
+
+  it("stops autosaving once the entry is logged", async () => {
+    const api = mockApi();
+    api.exit.mockRejectedValue(new Error("Cannot exit"));
+    const { entry } = await setupWithFakeTimers(api);
+    entry.value = "logged";
+    key(entry, "Enter");
+    await tick();
+    expect(api.submit).toHaveBeenCalledOnce();
+    type(entry, "logged");
+    entry.dispatchEvent(new Event("input"));
+    window.dispatchEvent(new Event("blur"));
+    await tick(AUTOSAVE_MAX_WAIT_MS);
+    expect(api.saveDraft).not.toHaveBeenCalled();
+  });
+
+  it("waits while the settings dialog is open and saves after it closes", async () => {
+    const api = mockApi();
+    const { entry, gear, cancelButton } = await setupWithFakeTimers(api);
+    type(entry, "before settings");
+    gear.click();
+    await tick();
+    await tick(AUTOSAVE_DELAY_MS * 3);
+    expect(api.saveDraft).not.toHaveBeenCalled();
+    cancelButton.click();
+    await tick(AUTOSAVE_DELAY_MS);
+    expect(api.saveDraft).toHaveBeenCalledExactlyOnceWith("before settings");
+  });
+
+  it("Escape and Enter wait for an in-flight autosave before calling the backend", async () => {
+    const api = mockApi();
+    let resolve!: () => void;
+    api.saveDraft.mockReturnValue(new Promise((done) => { resolve = done; }));
+    const { entry } = await setupWithFakeTimers(api);
+    type(entry, "racing");
+    await tick(AUTOSAVE_DELAY_MS);
+    expect(api.saveDraft).toHaveBeenCalledOnce();
+    key(entry, "Enter");
+    await tick();
+    expect(api.submit).not.toHaveBeenCalled();
+    resolve();
+    await tick();
+    expect(api.submit).toHaveBeenCalledExactlyOnceWith("racing");
+    expect(api.exit).toHaveBeenCalledOnce();
+
+    const other = mockApi();
+    let finish!: () => void;
+    other.saveDraft.mockReturnValue(new Promise((done) => { finish = done; }));
+    cleanups.pop()?.();
+    document.body.replaceChildren();
+    vi.useRealTimers();
+    const view = await setupWithFakeTimers(other);
+    type(view.entry, "escaping");
+    await tick(AUTOSAVE_DELAY_MS);
+    key(view.entry, "Escape");
+    await tick();
+    expect(other.exit).not.toHaveBeenCalled();
+    finish();
+    await tick();
+    expect(other.exit).toHaveBeenCalledExactlyOnceWith("escaping");
+  });
+
+  it("retries quietly when the backend is busy", async () => {
+    const api = mockApi();
+    api.saveDraft.mockRejectedValueOnce({ code: "busy", message: "An operation is already in progress." });
+    const { entry, message } = await setupWithFakeTimers(api);
+    type(entry, "retry me");
+    await tick(AUTOSAVE_DELAY_MS);
+    expect(message.textContent).toBe("");
+    await tick(AUTOSAVE_DELAY_MS);
+    expect(api.saveDraft).toHaveBeenCalledTimes(2);
+    expect(api.saveDraft).toHaveBeenLastCalledWith("retry me");
+  });
+
+  it("shows autosave failures and clears them after a later success", async () => {
+    const api = mockApi();
+    api.saveDraft.mockRejectedValueOnce({ code: "draft_io", message: "Disk full" });
+    const { entry, message, notice } = await setupWithFakeTimers(api);
+    type(entry, "first");
+    await tick(AUTOSAVE_DELAY_MS);
+    expect(message.textContent).toBe("Could not autosave the draft: Disk full");
+    expect(message.className).toBe("error");
+    expect(notice.textContent).toBe("");
+    await tick(AUTOSAVE_MAX_WAIT_MS);
+    expect(api.saveDraft).toHaveBeenCalledOnce();
+    type(entry, "second");
+    await tick(AUTOSAVE_DELAY_MS);
+    expect(api.saveDraft).toHaveBeenLastCalledWith("second");
+    expect(message.textContent).toBe("");
+    expect(entry.value).toBe("second");
+  });
+
+  it("does not clear unrelated errors after a successful autosave", async () => {
+    const api = mockApi();
+    api.loadSettings.mockRejectedValue(new Error("Fix configuration"));
+    const { entry, message } = await setupWithFakeTimers(api);
+    type(entry, "text");
+    await tick(AUTOSAVE_DELAY_MS);
+    expect(api.saveDraft).toHaveBeenCalledOnce();
+    expect(message.textContent).toBe("Fix configuration");
+  });
+
+  it("an OS close request exits with the latest text", async () => {
+    const api = mockApi();
+    const { entry } = await setupWithFakeTimers(api);
+    expect(api.onCloseRequested).toHaveBeenCalledOnce();
+    type(entry, "unsaved at quit");
+    closeRequested!();
+    await tick();
+    expect(api.exit).toHaveBeenCalledExactlyOnceWith("unsaved at quit");
+  });
+
+  it("ignores an OS close request during an operation", async () => {
+    const api = mockApi();
+    let resolve!: (result: SavedEntry) => void;
+    api.submit.mockReturnValue(new Promise((done) => { resolve = done; }));
+    const { entry } = await setupWithFakeTimers(api);
+    entry.value = "saving";
+    key(entry, "Enter");
+    await tick();
+    closeRequested!();
+    await tick();
+    expect(api.exit).not.toHaveBeenCalled();
+    resolve({ note_path: "today.md" });
+    await tick();
+    expect(api.exit).toHaveBeenCalledExactlyOnceWith(undefined);
+  });
+
+  it("unsubscribes from close requests on unmount", async () => {
+    await setup();
+    cleanups.pop()?.();
+    expect(unlistenClose).toHaveBeenCalledOnce();
   });
 });

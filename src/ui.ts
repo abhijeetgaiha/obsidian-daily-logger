@@ -1,5 +1,8 @@
 import { errorMessage, type JournalApi, type NoteLabel, type Settings } from "./api";
+import { createAutosave } from "./autosave";
 import { mountSettingsDialog } from "./settings";
+
+const AUTOSAVE_NOTICE_MS = 1500;
 
 const gearIcon = `
   <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false">
@@ -22,6 +25,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
           Use yesterday if today is missing
         </label>
         <div class="note">
+          <span id="autosave" role="status" aria-live="polite"></span>
           <span id="note-name"></span>
           <button id="settings" type="button" aria-label="Settings" title="Settings"
             aria-haspopup="dialog">${gearIcon}</button>
@@ -34,6 +38,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   const entry = root.querySelector<HTMLTextAreaElement>("#entry")!;
   const checkbox = root.querySelector<HTMLInputElement>("#fallback")!;
   const noteName = root.querySelector<HTMLSpanElement>("#note-name")!;
+  const autosaveNotice = root.querySelector<HTMLSpanElement>("#autosave")!;
   const gear = root.querySelector<HTMLButtonElement>("#settings")!;
   const message = root.querySelector<HTMLParagraphElement>("#message")!;
   const dragArea = root.querySelector<HTMLDivElement>(".drag-area")!;
@@ -42,6 +47,32 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   let busy = true;
   let draftLoaded = false;
   let savedPath: string | undefined;
+  let autosaveError: string | undefined;
+  let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+  const autosave = createAutosave({
+    read: () => entry.value,
+    state() {
+      if (!draftLoaded || savedPath !== undefined) return "disabled";
+      return busy || dialog.isOpen ? "blocked" : "ready";
+    },
+    save: (text) => api.saveDraft(text),
+    onSaved() {
+      if (autosaveError !== undefined && message.textContent === autosaveError) {
+        message.textContent = "";
+        message.className = "";
+      }
+      autosaveError = undefined;
+      autosaveNotice.textContent = "Draft saved";
+      clearTimeout(noticeTimer);
+      noticeTimer = setTimeout(() => {
+        autosaveNotice.textContent = "";
+      }, AUTOSAVE_NOTICE_MS);
+    },
+    onError(error) {
+      autosaveError = `Could not autosave the draft: ${errorMessage(error)}`;
+      showError(autosaveError);
+    },
+  });
   const dialog = mountSettingsDialog(root, api, {
     onSaved(saved) {
       settings = saved;
@@ -87,6 +118,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   async function close() {
     busy = true;
     render();
+    await autosave.idle();
     try {
       await api.exit(savedPath === undefined && draftLoaded ? entry.value : undefined);
     } catch (error) {
@@ -103,6 +135,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
 
   async function restoreDraft() {
     entry.value = await api.loadDraft();
+    autosave.reset(entry.value);
     draftLoaded = true;
     entry.setSelectionRange(entry.value.length, entry.value.length);
   }
@@ -113,6 +146,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     message.textContent = "Saving...";
     message.className = "";
     render();
+    await autosave.idle();
     try {
       if (!draftLoaded) {
         await restoreDraft();
@@ -142,6 +176,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     busy = true;
     message.textContent = "";
     render();
+    await autosave.idle();
     try {
       settings = await api.setFallback(enabled);
       note = settings.note ?? undefined;
@@ -158,6 +193,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     if (busy || dialog.isOpen || savedPath !== undefined) return;
     busy = true;
     render();
+    await autosave.idle();
     try {
       dialog.show(await api.readSettingsForm());
     } catch (error) {
@@ -196,6 +232,23 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     }
   }
 
+  const onInput = () => autosave.schedule();
+  const onBlur = () => void autosave.flush();
+  const onCloseRequested = () => {
+    if (!busy) void close();
+  };
+  let disposed = false;
+  let unlistenClose: (() => void) | undefined;
+  api.onCloseRequested(onCloseRequested).then(
+    (unlisten) => {
+      if (disposed) unlisten();
+      else unlistenClose = unlisten;
+    },
+    (error) => showError(error),
+  );
+
+  entry.addEventListener("input", onInput);
+  window.addEventListener("blur", onBlur);
   checkbox.addEventListener("change", changeFallback);
   gear.addEventListener("click", openSettings);
   dragArea.addEventListener("pointerdown", startDragging);
@@ -222,6 +275,12 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   void initialize();
 
   return () => {
+    disposed = true;
+    unlistenClose?.();
+    autosave.dispose();
+    clearTimeout(noticeTimer);
+    entry.removeEventListener("input", onInput);
+    window.removeEventListener("blur", onBlur);
     window.removeEventListener("keydown", onKeyDown);
     checkbox.removeEventListener("change", changeFallback);
     gear.removeEventListener("click", openSettings);

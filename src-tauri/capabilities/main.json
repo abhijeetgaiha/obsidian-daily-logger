@@ -5,7 +5,10 @@
   "windows": ["main"],
   "permissions": [
     "core:window:allow-start-dragging",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
     "allow-load-draft",
+    "allow-save-draft",
     "allow-load-settings",
     "allow-set-fallback",
     "allow-read-settings-form",

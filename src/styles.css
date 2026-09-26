@@ -92,6 +92,12 @@ button:focus-visible { outline: 2px solid #537a99; }
 #settings:hover:not(:disabled) { opacity: 1; background: rgb(127 127 127 / 0.15); }
 #settings:disabled { opacity: 0.3; cursor: default; }
 
+#autosave {
+  flex: none;
+  opacity: 0.6;
+  user-select: none;
+}
+
 #note-name {
   min-width: 0;
   overflow: hidden;
