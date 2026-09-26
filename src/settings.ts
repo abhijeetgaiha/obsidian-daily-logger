@@ -13,7 +13,8 @@ interface FieldContext {
 interface Field {
   element: HTMLElement;
   render(form: SettingsForm, disabled: boolean): void;
-  valid?(form: SettingsForm): boolean;
+  /** Reloads data that depends on the form; runs on open and when the folder changes. */
+  refresh?(): Promise<void>;
   destroy(): void;
 }
 
@@ -46,21 +47,13 @@ function folderField(api: JournalApi, context: FieldContext): Field {
   };
 }
 
-// Mirrors journal_core::validate_heading; the backend validates authoritatively on save.
-export function headingProblem(heading: string): string | undefined {
-  const trimmed = heading.trim();
-  if (trimmed === "" || /^#{1,6}[ \t]+\S/.test(trimmed)) return undefined;
-  return "Use 1–6 # characters, a space, and text, e.g. # Journal or ## Daily Log.";
-}
-
-function headingField(_api: JournalApi, context: FieldContext): Field {
+function headingField(api: JournalApi, context: FieldContext): Field {
   const element = document.createElement("div");
   element.className = "setting";
   element.innerHTML = `
     <label class="setting-label" for="settings-heading">Insert under heading</label>
-    <input id="settings-heading" type="text" placeholder="Empty: add to end of file"
-      spellcheck="false" autocomplete="off" aria-describedby="settings-heading-problem" />
-    <p id="settings-heading-problem" class="error"></p>
+    <select id="settings-heading" aria-describedby="settings-heading-note"></select>
+    <p id="settings-heading-note"></p>
     <label class="sub-setting">
       If the heading appears more than once
       <select id="settings-duplicates">
@@ -70,30 +63,83 @@ function headingField(_api: JournalApi, context: FieldContext): Field {
       </select>
     </label>
   `;
-  const input = element.querySelector<HTMLInputElement>("#settings-heading")!;
-  const problem = element.querySelector<HTMLParagraphElement>("#settings-heading-problem")!;
-  const select = element.querySelector<HTMLSelectElement>("#settings-duplicates")!;
-  const onInput = () => context.update({ heading: input.value });
-  const onChange = () => context.update({
-    duplicate_heading: select.value as DuplicateHeading,
+  const headingSelect = element.querySelector<HTMLSelectElement>("#settings-heading")!;
+  const note = element.querySelector<HTMLParagraphElement>("#settings-heading-note")!;
+  const duplicates = element.querySelector<HTMLSelectElement>("#settings-duplicates")!;
+
+  function option(value: string, label: string) {
+    const item = document.createElement("option");
+    item.value = value;
+    item.textContent = label;
+    return item;
+  }
+
+  function setOptions(headings: string[]) {
+    headingSelect.replaceChildren(
+      option("", "End of file"), ...headings.map((heading) => option(heading, heading)),
+    );
+  }
+
+  function setNote(text: string, kind: "" | "notice" | "error" = "") {
+    note.textContent = text;
+    note.className = kind;
+  }
+
+  const onHeadingChange = () => context.update({ heading: headingSelect.value });
+  const onDuplicatesChange = () => context.update({
+    duplicate_heading: duplicates.value as DuplicateHeading,
   });
-  input.addEventListener("input", onInput);
-  select.addEventListener("change", onChange);
+  headingSelect.addEventListener("change", onHeadingChange);
+  duplicates.addEventListener("change", onDuplicatesChange);
+  setOptions([]);
   return {
     element,
     render(form, disabled) {
-      if (input.value !== form.heading) input.value = form.heading;
-      input.disabled = disabled;
-      const message = headingProblem(form.heading);
-      problem.textContent = message ?? "";
-      input.setAttribute("aria-invalid", String(message !== undefined));
-      select.value = form.duplicate_heading;
-      select.disabled = disabled || form.heading.trim() === "";
+      // Keep an unverified saved heading selectable until the note has been scanned.
+      if (![...headingSelect.options].some((item) => item.value === form.heading)) {
+        headingSelect.append(option(form.heading, form.heading));
+      }
+      headingSelect.value = form.heading;
+      headingSelect.disabled = disabled;
+      duplicates.value = form.duplicate_heading;
+      duplicates.disabled = disabled || form.heading === "";
     },
-    valid: (form) => headingProblem(form.heading) === undefined,
+    async refresh() {
+      const { vault_root: root } = context.form();
+      let list;
+      try {
+        list = await api.listHeadings(root);
+      } catch (error) {
+        setNote(`Could not list headings: ${errorMessage(error)}`, "error");
+        return;
+      }
+      setOptions(list.headings);
+      if (list.problem !== null) {
+        setNote(list.problem, "error");
+        context.update({});
+        return;
+      }
+      if (list.note === null) {
+        setNote(root === null
+          ? "Choose a journal folder to list its headings."
+          : "No daily note for today or yesterday; only End of file is available.");
+      } else {
+        setNote(`Headings from ${list.note}.`);
+      }
+      const current = context.form().heading;
+      if (current !== "" && !list.headings.includes(current)) {
+        context.update({ heading: "" });
+        setNote(
+          `"${current}" isn't in ${list.note ?? "a daily note"}; End of file selected.`,
+          "notice",
+        );
+      } else {
+        context.update({});
+      }
+    },
     destroy() {
-      input.removeEventListener("input", onInput);
-      select.removeEventListener("change", onChange);
+      headingSelect.removeEventListener("change", onHeadingChange);
+      duplicates.removeEventListener("change", onDuplicatesChange);
     },
   };
 }
@@ -166,13 +212,13 @@ export function mountSettingsDialog(
   };
   let open = false;
   let busy = false;
+  let refreshNeeded = false;
 
   function render() {
     overlay.hidden = !open;
     fields.forEach((field) => field.render(form, busy));
     cancelButton.disabled = busy;
-    saveButton.disabled = busy || form.vault_root === null
-      || fields.some((field) => field.valid?.(form) === false);
+    saveButton.disabled = busy || form.vault_root === null;
     overlay.setAttribute("aria-busy", String(busy));
   }
 
@@ -184,6 +230,10 @@ export function mountSettingsDialog(
     render();
     try {
       await task();
+      if (refreshNeeded) {
+        refreshNeeded = false;
+        await Promise.all(fields.map((field) => field.refresh?.()));
+      }
     } catch (error) {
       message.textContent = errorMessage(error);
       message.className = "error";
@@ -196,6 +246,9 @@ export function mountSettingsDialog(
   const context: FieldContext = {
     form: () => form,
     update(change) {
+      if (change.vault_root !== undefined && change.vault_root !== form.vault_root) {
+        refreshNeeded = true;
+      }
       form = { ...form, ...change };
       render();
     },
@@ -244,8 +297,10 @@ export function mountSettingsDialog(
       message.textContent = "";
       message.className = "";
       open = true;
+      refreshNeeded = true;
       render();
       overlay.querySelector<HTMLButtonElement>("#settings-choose")!.focus();
+      void run(async () => {});
     },
     cancel,
     destroy() {

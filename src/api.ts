@@ -29,6 +29,12 @@ export interface FormResult {
   issue: string | null;
 }
 
+export interface HeadingList {
+  note: string | null;
+  headings: string[];
+  problem: string | null;
+}
+
 export interface SavedEntry {
   note_path: string;
 }
@@ -39,6 +45,7 @@ export interface JournalApi {
   loadSettings(): Promise<Settings>;
   setFallback(enabled: boolean): Promise<Settings>;
   readSettingsForm(): Promise<FormResult>;
+  listHeadings(vaultRoot: string | null): Promise<HeadingList>;
   pickVaultFolder(current: string | null): Promise<string | null>;
   saveSettings(form: SettingsForm): Promise<Settings>;
   submit(text: string): Promise<SavedEntry>;
@@ -54,6 +61,7 @@ export const api: JournalApi = {
   loadSettings: () => invoke<Settings>("load_settings"),
   setFallback: (enabled) => invoke<Settings>("set_fallback", { enabled }),
   readSettingsForm: () => invoke<FormResult>("read_settings_form"),
+  listHeadings: (vaultRoot) => invoke<HeadingList>("list_headings", { vaultRoot }),
   pickVaultFolder: (current) => invoke<string | null>("pick_vault_folder", { current }),
   saveSettings: (form) => invoke<Settings>("save_settings", { form }),
   submit: (text) => invoke<SavedEntry>("submit_entry", { text }),

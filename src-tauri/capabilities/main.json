@@ -12,6 +12,7 @@
     "allow-load-settings",
     "allow-set-fallback",
     "allow-read-settings-form",
+    "allow-list-headings",
     "allow-pick-vault-folder",
     "allow-save-settings",
     "allow-submit-entry",

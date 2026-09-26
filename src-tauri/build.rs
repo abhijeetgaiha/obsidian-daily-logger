@@ -6,6 +6,7 @@ fn main() {
             "load_settings",
             "set_fallback",
             "read_settings_form",
+            "list_headings",
             "pick_vault_folder",
             "save_settings",
             "submit_entry",

@@ -20,6 +20,7 @@ pub fn run() {
             commands::load_settings,
             commands::set_fallback,
             commands::read_settings_form,
+            commands::list_headings,
             commands::pick_vault_folder,
             commands::save_settings,
             commands::submit_entry,

@@ -1,5 +1,5 @@
 use crate::{
-    config::{self, FormResult, Settings, SettingsForm},
+    config::{self, FormResult, HeadingList, Settings, SettingsForm},
     draft,
     error::AppError,
 };
@@ -182,6 +182,18 @@ pub async fn set_fallback(state: State<'_, AppState>, enabled: bool) -> Result<S
 #[tauri::command]
 pub async fn read_settings_form(state: State<'_, AppState>) -> Result<FormResult, AppError> {
     operate(&state, |_, path| Ok(config::read_form(path))).await
+}
+
+#[tauri::command]
+pub async fn list_headings(
+    state: State<'_, AppState>,
+    vault_root: Option<String>,
+) -> Result<HeadingList, AppError> {
+    let today = Local::now().date_naive();
+    operate(&state, move |_, _| {
+        Ok(config::list_headings(vault_root.as_deref(), today))
+    })
+    .await
 }
 
 #[tauri::command]

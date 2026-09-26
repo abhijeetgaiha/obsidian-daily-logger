@@ -1,8 +1,8 @@
 use chrono::{FixedOffset, NaiveDate, TimeZone};
 use journal_core::{
     append_entry, atomic_write, build_updated_note, daily_note_path, format_timestamp,
-    locate_daily_note, select_daily_note, trim_entry, validate_heading, DuplicateHeading,
-    LocatedNote, LogError, Placement,
+    list_headings, locate_daily_note, select_daily_note, trim_entry, validate_heading,
+    DuplicateHeading, LocatedNote, LogError, Placement,
 };
 use std::{fs, path::Path};
 
@@ -402,4 +402,27 @@ fn atomic_note_replacement_still_requires_an_existing_destination() {
     let path = root.path().join("missing.md");
     assert!(atomic_write(&path, b"must not create a missing note").is_err());
     assert!(!path.exists());
+}
+
+#[test]
+fn listed_headings_are_distinct_ordered_and_insertable() {
+    let text = "intro\r\n# Journal \t\r\n## Daily Log\n#tag\n##\n## \n####### seven\n\
+                ### Deep\n# Journal\n## Padded\u{a0}\n   # Indented\n###### Six";
+    let headings = list_headings(text);
+    assert_eq!(
+        headings,
+        ["# Journal", "## Daily Log", "### Deep", "###### Six"]
+    );
+    for heading in &headings {
+        let placement = Placement {
+            heading: Some(heading.clone()),
+            duplicates: DuplicateHeading::First,
+        };
+        assert!(
+            build_updated_note(text.as_bytes(), "entry", &placement).is_ok(),
+            "{heading}"
+        );
+    }
+    assert!(list_headings("").is_empty());
+    assert!(list_headings("no headings\n#tag").is_empty());
 }

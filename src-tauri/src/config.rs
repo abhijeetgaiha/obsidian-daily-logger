@@ -68,6 +68,14 @@ pub struct FormResult {
     pub issue: Option<String>,
 }
 
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
+pub struct HeadingList {
+    /// File name (without extension) of the scanned note, if one was found.
+    pub note: Option<String>,
+    pub headings: Vec<String>,
+    pub problem: Option<String>,
+}
+
 fn error(path: &Path, detail: impl std::fmt::Display) -> AppError {
     AppError::new(
         "configuration",
@@ -188,6 +196,45 @@ pub fn read_form(path: &Path) -> FormResult {
             path.display(),
             problems.join("; ")
         ));
+    }
+    result
+}
+
+/// Headings in the located daily note (today's, else yesterday's) under `vault_root`.
+pub fn list_headings(vault_root: Option<&str>, today: NaiveDate) -> HeadingList {
+    let mut result = HeadingList::default();
+    let Some(root) = vault_root.map(Path::new) else {
+        return result;
+    };
+    if validate_root(root).is_err() {
+        return result;
+    }
+    let note = match journal_core::locate_daily_note(root, today) {
+        Ok(Some(note)) => note,
+        Ok(None) => return result,
+        Err(detail) => {
+            result.problem = Some(format!("Could not look for the daily note: {detail}"));
+            return result;
+        }
+    };
+    result.note = note
+        .path
+        .file_stem()
+        .map(|name| name.to_string_lossy().into_owned());
+    let text = fs::read(&note.path)
+        .map_err(|detail| detail.to_string())
+        .and_then(|bytes| {
+            let body = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes);
+            String::from_utf8(body.to_vec()).map_err(|detail| detail.utf8_error().to_string())
+        });
+    match text {
+        Ok(text) => result.headings = journal_core::list_headings(&text),
+        Err(detail) => {
+            result.problem = Some(format!(
+                "Could not read headings from {}: {detail}",
+                note.path.display()
+            ))
+        }
     }
     result
 }
@@ -658,5 +705,39 @@ mod tests {
         form.heading = "   ".into();
         save_form(&path, &form, today()).unwrap();
         assert_eq!(load(&path).unwrap().placement().heading, None);
+    }
+
+    #[test]
+    fn list_headings_scans_the_located_note() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().display().to_string();
+        let empty = HeadingList::default();
+        assert_eq!(list_headings(None, today()), empty);
+        assert_eq!(list_headings(Some("relative"), today()), empty);
+        let missing = root.path().join("missing").display().to_string();
+        assert_eq!(list_headings(Some(&missing), today()), empty);
+        assert_eq!(list_headings(Some(&dir), today()), empty);
+        let write = |date: NaiveDate, bytes: &[u8]| {
+            let note = journal_core::daily_note_path(root.path(), date);
+            fs::create_dir_all(note.parent().unwrap()).unwrap();
+            fs::write(note, bytes).unwrap();
+        };
+        write(
+            today().pred_opt().unwrap(),
+            b"\xef\xbb\xbf# Yesterday\r\n## Log\r\n",
+        );
+        assert_eq!(
+            list_headings(Some(&dir), today()),
+            HeadingList {
+                note: Some("2026-02-28".into()),
+                headings: vec!["# Yesterday".into(), "## Log".into()],
+                problem: None,
+            }
+        );
+        write(today(), b"# Journal\n\xff");
+        let invalid = list_headings(Some(&dir), today());
+        assert_eq!(invalid.note.as_deref(), Some("2026-03-01"));
+        assert!(invalid.headings.is_empty());
+        assert!(invalid.problem.unwrap().contains("Could not read headings"));
     }
 }

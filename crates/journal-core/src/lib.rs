@@ -10,6 +10,8 @@ use thiserror::Error;
 
 static VALID_HEADING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^#{1,6}[ \t]+\S").unwrap());
 static BOUNDARY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^#{1,6}[ \t]+\S").unwrap());
+static HEADING_LINE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^#{1,6}[ \t]+\S[^\n]*").unwrap());
 const BOM: &[u8] = b"\xef\xbb\xbf";
 
 #[derive(Debug, Error)]
@@ -81,6 +83,22 @@ pub fn validate_heading(input: &str) -> Result<Option<String>, String> {
         );
     }
     Ok(Some(heading.to_owned()))
+}
+
+/// Distinct headings in document order, limited to ones that `build_updated_note` can match.
+pub fn list_headings(text: &str) -> Vec<String> {
+    let mut headings: Vec<String> = Vec::new();
+    for line in HEADING_LINE.find_iter(text) {
+        let heading = line.as_str().trim_end_matches([' ', '\t', '\r']);
+        let round_trips = validate_heading(heading)
+            .ok()
+            .flatten()
+            .is_some_and(|valid| valid == heading);
+        if round_trips && !headings.iter().any(|seen| seen == heading) {
+            headings.push(heading.to_owned());
+        }
+    }
+    headings
 }
 
 pub fn daily_note_path(root: &Path, date: NaiveDate) -> PathBuf {

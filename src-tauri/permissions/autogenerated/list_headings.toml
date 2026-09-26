@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-headings"
+description = "Enables the list_headings command without any pre-configured scope."
+commands.allow = ["list_headings"]
+
+[[permission]]
+identifier = "deny-list-headings"
+description = "Denies the list_headings command without any pre-configured scope."
+commands.deny = ["list_headings"]

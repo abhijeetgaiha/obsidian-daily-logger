@@ -59,10 +59,15 @@ option to choose a different settings file.
   folder with the system folder picker, then **Save** to create the file (and its
   directory).
 - **Valid file:** the current settings are loaded for editing.
-- **Insert under heading:** leave empty to add entries to the end of the note,
-  or enter a Markdown heading such as `# Journal` or `## Daily Log` (1–6 `#`,
-  a space, then text). **If the heading appears more than once** chooses between
-  showing an error (default), using the first, or using the last occurrence.
+- **Insert under heading:** a dropdown with **End of file** (append to the end
+  of the note) followed by every distinct heading in the daily note that the
+  status row shows (today's, or yesterday's if today's is missing), read from the
+  folder selected in the dialog and rescanned after **Choose…**. Without a note
+  or folder, only End of file is offered. If the saved heading is not in that
+  note, End of file is selected and a notice says so; Cancel keeps the saved
+  setting. To use a new heading, add it to the daily note and reopen Settings.
+  **If the heading appears more than once** chooses between showing an error
+  (default), using the first, or using the last occurrence.
 - **Invalid file:** every valid value is filled in and the problems are listed.
   Pick new settings and **Save** to replace the file. Unknown fields are dropped.
 
@@ -96,7 +101,9 @@ malformed configuration only when you save from the settings dialog. Unknown
 fields and wrong types are rejected. Optional fields: `heading` defaults to `""`
 (end of file), `duplicate_heading` to `"error"` (or `"first"`/`"last"`), and the
 fallback to `false`. Configurations written before the heading setting existed
-therefore append to the end of the note until a heading is set.
+therefore append to the end of the note until a heading is set. A hand-edited
+`heading` may be any Markdown heading (1–6 `#`, a space, then text), even one
+not in today's note.
 
 Configuration reloads before every save and checkbox change. Correct the file
 (externally or with the gear) and press Enter to retry without losing your draft.

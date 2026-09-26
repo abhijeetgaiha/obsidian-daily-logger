@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AUTOSAVE_DELAY_MS, AUTOSAVE_MAX_WAIT_MS } from "./autosave";
 import {
-  errorMessage, type FormResult, type JournalApi, type SavedEntry, type Settings,
+  errorMessage, type FormResult, type HeadingList, type JournalApi, type SavedEntry,
+  type Settings,
 } from "./api";
 import { mountJournal } from "./ui";
 
@@ -23,6 +24,12 @@ const validForm: FormResult = {
 let closeRequested: (() => void) | undefined;
 const unlistenClose = vi.fn();
 
+const noteHeadings: HeadingList = {
+  note: "2026-09-26",
+  headings: ["# Journal", "## Daily Log"],
+  problem: null,
+};
+
 function mockApi() {
   return {
     loadDraft: vi.fn<JournalApi["loadDraft"]>().mockResolvedValue(""),
@@ -38,6 +45,7 @@ function mockApi() {
       ...initial, use_yesterday_if_today_missing: enabled,
     })),
     readSettingsForm: vi.fn<JournalApi["readSettingsForm"]>().mockResolvedValue(validForm),
+    listHeadings: vi.fn<JournalApi["listHeadings"]>().mockResolvedValue(noteHeadings),
     pickVaultFolder: vi.fn<JournalApi["pickVaultFolder"]>().mockResolvedValue("/picked"),
     saveSettings: vi.fn<JournalApi["saveSettings"]>().mockImplementation(async (form) => ({
       ...initial, use_yesterday_if_today_missing: form.use_yesterday_if_today_missing,
@@ -78,8 +86,8 @@ async function setup(api = mockApi()) {
     folder: root.querySelector<HTMLSpanElement>("#settings-folder")!,
     choose: root.querySelector<HTMLButtonElement>("#settings-choose")!,
     dialogFallback: root.querySelector<HTMLInputElement>("#settings-fallback")!,
-    heading: root.querySelector<HTMLInputElement>("#settings-heading")!,
-    headingProblem: root.querySelector<HTMLParagraphElement>("#settings-heading-problem")!,
+    heading: root.querySelector<HTMLSelectElement>("#settings-heading")!,
+    headingNote: root.querySelector<HTMLParagraphElement>("#settings-heading-note")!,
     duplicates: root.querySelector<HTMLSelectElement>("#settings-duplicates")!,
     dialogMessage: root.querySelector<HTMLParagraphElement>("#settings-message")!,
     saveButton: root.querySelector<HTMLButtonElement>("#settings-save")!,
@@ -588,49 +596,109 @@ describe("minimal journal window", () => {
     expect(api.readSettingsForm).not.toHaveBeenCalled();
   });
 
-  it("loads the heading settings and enables the dropdown only with a heading", async () => {
+  it("lists End of file and the note's headings, selecting the saved one", async () => {
     const api = mockApi();
     api.readSettingsForm.mockResolvedValue({
       ...validForm,
       form: { ...validForm.form, heading: "## Daily Log", duplicate_heading: "last" },
     });
-    const { heading, duplicates, headingProblem } = await openSettings(api);
+    const { heading, duplicates, headingNote } = await openSettings(api);
+    expect(api.listHeadings).toHaveBeenCalledExactlyOnceWith("/vault");
+    expect([...heading.options].map((item) => [item.value, item.textContent])).toEqual([
+      ["", "End of file"], ["# Journal", "# Journal"], ["## Daily Log", "## Daily Log"],
+    ]);
     expect(heading.value).toBe("## Daily Log");
+    expect(headingNote.textContent).toBe("Headings from 2026-09-26.");
     expect(duplicates.value).toBe("last");
     expect(duplicates.disabled).toBe(false);
-    expect(headingProblem.textContent).toBe("");
-    heading.value = "  ";
-    heading.dispatchEvent(new Event("input"));
+    heading.value = "";
+    heading.dispatchEvent(new Event("change"));
     expect(duplicates.disabled).toBe(true);
-    expect(heading.placeholder).toContain("end of file");
   });
 
-  it("validates the heading as it is typed and blocks saving invalid headings", async () => {
+  it("falls back to End of file with a notice when the saved heading is missing", async () => {
     const api = mockApi();
-    const { heading, headingProblem, saveButton } = await openSettings(api);
-    for (const invalid of ["Journal", "#Journal", "####### Seven", "#"]) {
-      heading.value = invalid;
-      heading.dispatchEvent(new Event("input"));
-      expect(headingProblem.textContent, invalid).toContain("# Journal");
-      expect(heading.getAttribute("aria-invalid")).toBe("true");
-      expect(saveButton.disabled, invalid).toBe(true);
-    }
-    for (const valid of ["", "# Journal", "  ## Daily Log  ", "######\tSix"]) {
-      heading.value = valid;
-      heading.dispatchEvent(new Event("input"));
-      expect(headingProblem.textContent, valid).toBe("");
-      expect(saveButton.disabled, valid).toBe(false);
-    }
+    api.readSettingsForm.mockResolvedValue({
+      ...validForm, form: { ...validForm.form, heading: "# Gone" },
+    });
+    const { heading, headingNote, saveButton } = await openSettings(api);
+    expect(heading.value).toBe("");
+    expect([...heading.options].map((item) => item.value)).not.toContain("# Gone");
+    expect(headingNote.textContent).toBe(
+      "\"# Gone\" isn't in 2026-09-26; End of file selected.",
+    );
+    expect(headingNote.className).toBe("notice");
+    saveButton.click();
+    await flush();
+    expect(api.saveSettings).toHaveBeenCalledWith({ ...validForm.form, heading: "" });
   });
 
-  it("saves the heading and duplicate policy with the other settings", async () => {
+  it("offers only End of file without a daily note or folder", async () => {
+    const api = mockApi();
+    api.listHeadings.mockResolvedValue({ note: null, headings: [], problem: null });
+    api.readSettingsForm.mockResolvedValue({
+      ...validForm, form: { ...validForm.form, heading: "# Journal" },
+    });
+    const { heading, headingNote } = await openSettings(api);
+    expect([...heading.options].map((item) => item.value)).toEqual([""]);
+    expect(heading.value).toBe("");
+    expect(headingNote.textContent).toContain("isn't in a daily note");
+    cleanups.pop()?.();
+    document.body.replaceChildren();
+    api.readSettingsForm.mockResolvedValue({
+      config_path: "/config/config.json", exists: false,
+      form: { vault_root: null, ...noHeading, use_yesterday_if_today_missing: false },
+      issue: null,
+    });
+    const view = await openSettings(api);
+    expect(api.listHeadings).toHaveBeenLastCalledWith(null);
+    expect(view.headingNote.textContent).toBe("Choose a journal folder to list its headings.");
+  });
+
+  it("rescans headings after choosing a different folder", async () => {
+    const api = mockApi();
+    const { heading, choose, headingNote } = await openSettings(api);
+    api.listHeadings.mockResolvedValue({
+      note: "2026-09-25", headings: ["## Elsewhere"], problem: null,
+    });
+    choose.click();
+    await flush();
+    expect(api.listHeadings).toHaveBeenLastCalledWith("/picked");
+    expect([...heading.options].map((item) => item.value)).toEqual(["", "## Elsewhere"]);
+    expect(headingNote.textContent).toBe("Headings from 2026-09-25.");
+    api.pickVaultFolder.mockResolvedValue(null);
+    choose.click();
+    await flush();
+    expect(api.listHeadings).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows listing problems and IPC errors without dropping the saved heading", async () => {
+    const api = mockApi();
+    api.readSettingsForm.mockResolvedValue({
+      ...validForm, form: { ...validForm.form, heading: "# Journal" },
+    });
+    api.listHeadings.mockResolvedValue({
+      note: "2026-09-26", headings: [], problem: "Could not read headings: bad UTF-8",
+    });
+    const { heading, headingNote } = await openSettings(api);
+    expect(heading.value).toBe("# Journal");
+    expect(headingNote.textContent).toBe("Could not read headings: bad UTF-8");
+    expect(headingNote.className).toBe("error");
+    cleanups.pop()?.();
+    document.body.replaceChildren();
+    api.listHeadings.mockRejectedValue(new Error("Busy"));
+    const view = await openSettings(api);
+    expect(view.heading.value).toBe("# Journal");
+    expect(view.headingNote.textContent).toBe("Could not list headings: Busy");
+  });
+
+  it("saves the selected heading and duplicate policy with the other settings", async () => {
     const api = mockApi();
     const { heading, duplicates, saveButton, entry } = await openSettings(api);
     heading.value = "## Daily Log";
-    heading.dispatchEvent(new Event("input"));
+    heading.dispatchEvent(new Event("change"));
     duplicates.value = "first";
     duplicates.dispatchEvent(new Event("change"));
-    heading.focus();
     key(heading, "Enter");
     await flush();
     expect(api.submit).not.toHaveBeenCalled();
@@ -643,14 +711,15 @@ describe("minimal journal window", () => {
     expect(document.activeElement).toBe(entry);
   });
 
-  it("renders a stored heading as text", async () => {
+  it("renders note headings as text", async () => {
     const api = mockApi();
-    api.readSettingsForm.mockResolvedValue({
-      ...validForm, form: { ...validForm.form, heading: "# <b>x</b>" },
+    api.listHeadings.mockResolvedValue({
+      note: "<i>n</i>", headings: ["# <b>x</b>"], problem: null,
     });
-    const { heading, dialog } = await openSettings(api);
-    expect(heading.value).toBe("# <b>x</b>");
-    expect(dialog.querySelector("b")).toBeNull();
+    const { heading, headingNote, dialog } = await openSettings(api);
+    expect(heading.options[1].textContent).toBe("# <b>x</b>");
+    expect(headingNote.textContent).toBe("Headings from <i>n</i>.");
+    expect(dialog.querySelector("b, i")).toBeNull();
   });
 
   it("formats unknown errors explicitly", () => {
