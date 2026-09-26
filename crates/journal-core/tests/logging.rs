@@ -1,12 +1,24 @@
 use chrono::{FixedOffset, NaiveDate, TimeZone};
 use journal_core::{
     append_entry, atomic_write, build_updated_note, daily_note_path, format_timestamp,
-    locate_daily_note, select_daily_note, trim_entry, LocatedNote, LogError,
+    locate_daily_note, select_daily_note, trim_entry, validate_heading, DuplicateHeading,
+    LocatedNote, LogError, Placement,
 };
 use std::{fs, path::Path};
 
 fn date(year: i32, month: u32, day: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(year, month, day).unwrap()
+}
+
+fn under(heading: &str, duplicates: DuplicateHeading) -> Placement {
+    Placement {
+        heading: Some(heading.into()),
+        duplicates,
+    }
+}
+
+fn journal() -> Placement {
+    under("# Journal", DuplicateHeading::Error)
 }
 
 fn note(root: &Path, day: NaiveDate, bytes: &[u8]) -> std::path::PathBuf {
@@ -109,7 +121,11 @@ fn exact_heading_and_spacing_fixtures() {
         ("# Journal\n## Next", "# Journal\n\nentry\n\n## Next"),
         (
             "# Journal\n### Sub\n# Other\ntext",
-            "# Journal\n### Sub\n# Other\ntext\n\nentry\n",
+            "# Journal\n\nentry\n\n### Sub\n# Other\ntext",
+        ),
+        (
+            "# Journal\nold #tag\n#tag\n#\n####### seven\n# Next",
+            "# Journal\nold #tag\n#tag\n#\n####### seven\n\nentry\n\n# Next",
         ),
         (
             "# Journal\n##\n## \nend",
@@ -130,7 +146,7 @@ fn exact_heading_and_spacing_fixtures() {
     ];
     for (input, expected) in cases {
         assert_eq!(
-            build_updated_note(input.as_bytes(), "entry").unwrap(),
+            build_updated_note(input.as_bytes(), "entry", &journal()).unwrap(),
             expected.as_bytes(),
             "input: {input:?}"
         );
@@ -147,18 +163,140 @@ fn invalid_heading_counts_and_encoding() {
         "## Journal\n",
     ] {
         assert!(matches!(
-            build_updated_note(input.as_bytes(), "entry"),
-            Err(LogError::Structure(0))
+            build_updated_note(input.as_bytes(), "entry", &journal()),
+            Err(LogError::HeadingMissing { heading }) if heading == "# Journal"
         ));
     }
     assert!(matches!(
-        build_updated_note(b"# Journal\n# Journal\n", "entry"),
-        Err(LogError::Structure(2))
+        build_updated_note(b"# Journal\n# Journal\n", "entry", &journal()),
+        Err(LogError::HeadingDuplicate { count: 2, .. })
     ));
     assert!(matches!(
-        build_updated_note(b"# Journal\n\xff", "entry"),
+        build_updated_note(b"# Journal\n\xff", "entry", &journal()),
         Err(LogError::Encoding(_))
     ));
+    assert!(matches!(
+        build_updated_note(b"\xff", "entry", &Placement::default()),
+        Err(LogError::Encoding(_))
+    ));
+}
+
+#[test]
+fn empty_heading_appends_to_the_end_of_the_file() {
+    let cases = [
+        ("", "entry\n"),
+        ("\n", "\n\nentry\n"),
+        ("text", "text\n\nentry\n"),
+        ("text\n", "text\n\nentry\n"),
+        ("text\n\n", "text\n\nentry\n"),
+        (
+            "# Journal\nold\n## Next\nkeep",
+            "# Journal\nold\n## Next\nkeep\n\nentry\n",
+        ),
+        ("a\r\nb\r\n", "a\r\nb\r\n\r\nentry\r\n"),
+    ];
+    for (input, expected) in cases {
+        assert_eq!(
+            build_updated_note(input.as_bytes(), "entry", &Placement::default()).unwrap(),
+            expected.as_bytes(),
+            "input: {input:?}"
+        );
+    }
+    assert_eq!(
+        build_updated_note(b"\xef\xbb\xbf", "entry", &Placement::default()).unwrap(),
+        "\u{feff}entry\n".as_bytes()
+    );
+}
+
+#[test]
+fn configured_headings_match_exactly_and_end_at_any_heading() {
+    let daily = under("## Daily Log", DuplicateHeading::Error);
+    assert_eq!(
+        build_updated_note(
+            b"# Day\n## Daily Log \t\nold\n#### Deep\n## Other\n",
+            "entry",
+            &daily
+        )
+        .unwrap(),
+        b"# Day\n## Daily Log \t\nold\n\nentry\n\n#### Deep\n## Other\n"
+    );
+    assert_eq!(
+        build_updated_note(b"## Daily Log", "entry", &daily).unwrap(),
+        b"## Daily Log\n\nentry\n"
+    );
+    for input in [
+        "# Daily Log\n",
+        "### Daily Log\n",
+        "## daily log\n",
+        "## Daily  Log\n",
+        "## Daily Log extra\n",
+    ] {
+        assert!(
+            matches!(
+                build_updated_note(input.as_bytes(), "entry", &daily),
+                Err(LogError::HeadingMissing { .. })
+            ),
+            "input: {input:?}"
+        );
+    }
+    let special = under("# Notes (a+b)*", DuplicateHeading::Error);
+    assert_eq!(
+        build_updated_note(b"# Notes (a+b)*\n", "entry", &special).unwrap(),
+        b"# Notes (a+b)*\n\nentry\n"
+    );
+    assert!(build_updated_note(b"# Notes aab\n", "entry", &special).is_err());
+}
+
+#[test]
+fn duplicate_headings_follow_the_configured_policy() {
+    let input = b"# Log\none\n## Mid\n# Log\ntwo\n";
+    assert!(matches!(
+        build_updated_note(input, "entry", &under("# Log", DuplicateHeading::Error)),
+        Err(LogError::HeadingDuplicate { count: 2, heading }) if heading == "# Log"
+    ));
+    assert_eq!(
+        build_updated_note(input, "entry", &under("# Log", DuplicateHeading::First)).unwrap(),
+        b"# Log\none\n\nentry\n\n## Mid\n# Log\ntwo\n"
+    );
+    assert_eq!(
+        build_updated_note(input, "entry", &under("# Log", DuplicateHeading::Last)).unwrap(),
+        b"# Log\none\n## Mid\n# Log\ntwo\n\nentry\n"
+    );
+    for duplicates in [DuplicateHeading::First, DuplicateHeading::Last] {
+        assert!(matches!(
+            build_updated_note(b"text", "entry", &under("# Log", duplicates)),
+            Err(LogError::HeadingMissing { .. })
+        ));
+    }
+}
+
+#[test]
+fn heading_validation() {
+    for (input, expected) in [
+        ("", None),
+        ("  \t ", None),
+        ("# Journal", Some("# Journal")),
+        ("  ## Daily Log  ", Some("## Daily Log")),
+        ("###### Six", Some("###### Six")),
+        ("#\tTabbed", Some("#\tTabbed")),
+    ] {
+        assert_eq!(
+            validate_heading(input).unwrap().as_deref(),
+            expected,
+            "{input:?}"
+        );
+    }
+    for input in [
+        "Journal",
+        "#Journal",
+        "#",
+        "## ",
+        "####### Seven",
+        " x # Journal",
+        "# Journal\n## Two",
+    ] {
+        assert!(validate_heading(input).is_err(), "{input:?}");
+    }
 }
 
 #[test]
@@ -166,6 +304,7 @@ fn bom_and_multiline_unicode_are_preserved() {
     let result = build_updated_note(
         b"\xef\xbb\xbf# Journal\r\n## Next\r\n",
         "first\nsecond \u{1f333}",
+        &journal(),
     )
     .unwrap();
     assert_eq!(
@@ -181,7 +320,7 @@ fn append_is_exact_and_uses_invocation_date_even_near_midnight() {
     let zone = FixedOffset::east_opt(5 * 3600 + 30 * 60).unwrap();
     let moment = zone.with_ymd_and_hms(2026, 1, 1, 0, 5, 0).unwrap();
     let previous = note(root.path(), date(2025, 12, 31), b"# Journal\n");
-    let result = append_entry(root.path(), &moment, true, "  hello\nworld  ").unwrap();
+    let result = append_entry(root.path(), &moment, true, &journal(), "  hello\nworld  ").unwrap();
     assert_eq!(result, previous);
     assert_eq!(
         fs::read(previous).unwrap(),
@@ -200,18 +339,18 @@ fn invalid_entries_and_notes_do_not_write() {
     let path = note(root.path(), moment.date_naive(), b"no journal");
     for text in ["", " \t\n", "\u{1f}"] {
         assert!(matches!(
-            append_entry(root.path(), &moment, false, text),
+            append_entry(root.path(), &moment, false, &journal(), text),
             Err(LogError::EmptyEntry)
         ));
     }
     assert!(matches!(
-        append_entry(root.path(), &moment, false, "entry"),
-        Err(LogError::Structure(0))
+        append_entry(root.path(), &moment, false, &journal(), "entry"),
+        Err(LogError::HeadingMissing { .. })
     ));
     assert_eq!(fs::read(&path).unwrap(), b"no journal");
     fs::write(&path, b"# Journal\n\xff").unwrap();
     assert!(matches!(
-        append_entry(root.path(), &moment, false, "entry"),
+        append_entry(root.path(), &moment, false, &journal(), "entry"),
         Err(LogError::Encoding(_))
     ));
     assert_eq!(fs::read(&path).unwrap(), b"# Journal\n\xff");

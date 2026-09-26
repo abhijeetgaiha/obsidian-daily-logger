@@ -1,4 +1,6 @@
 {
   "vault_root": "",
+  "heading": "# Journal",
+  "duplicate_heading": "error",
   "use_yesterday_if_today_missing": false
 }

@@ -8,10 +8,8 @@ use std::{
 };
 use thiserror::Error;
 
-static JOURNAL: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^# Journal[ \t]*(?:\r?\n|$)").unwrap());
-static BOUNDARY: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^##[ \t]+.+(?:\r?\n|$)").unwrap());
+static VALID_HEADING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^#{1,6}[ \t]+\S").unwrap());
+static BOUNDARY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^#{1,6}[ \t]+\S").unwrap());
 const BOM: &[u8] = b"\xef\xbb\xbf";
 
 #[derive(Debug, Error)]
@@ -29,8 +27,16 @@ pub enum LogError {
     },
     #[error("The previous calendar date cannot be represented.")]
     DateRange,
-    #[error("Expected exactly one '# Journal' heading; found {0}.")]
-    Structure(usize),
+    #[error(
+        "The heading \"{heading}\" was not found in the daily note. Add it to the note or \
+         change the heading in Settings."
+    )]
+    HeadingMissing { heading: String },
+    #[error(
+        "The heading \"{heading}\" appears {count} times in the daily note. Remove the extra \
+         headings or choose which one to use in Settings."
+    )]
+    HeadingDuplicate { heading: String, count: usize },
     #[error("The daily note is not valid UTF-8: {0}")]
     Encoding(#[from] std::str::Utf8Error),
     #[error("Could not {operation} {path}: {source}")]
@@ -40,6 +46,41 @@ pub enum LogError {
         #[source]
         source: io::Error,
     },
+}
+
+/// Which occurrence to use when the configured heading appears more than once.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DuplicateHeading {
+    #[default]
+    Error,
+    First,
+    Last,
+}
+
+/// Where entries are inserted: at the end of the file, or at the end of a heading's section.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Placement {
+    pub heading: Option<String>,
+    pub duplicates: DuplicateHeading,
+}
+
+/// Trims a configured heading; empty means "end of file", otherwise it must be an ATX heading.
+pub fn validate_heading(input: &str) -> Result<Option<String>, String> {
+    let heading = input.trim();
+    if heading.is_empty() {
+        return Ok(None);
+    }
+    if heading.contains(['\r', '\n']) {
+        return Err("the heading must be a single line".into());
+    }
+    if !VALID_HEADING.is_match(heading) {
+        return Err(
+            "the heading must be 1 to 6 '#' characters, a space, and text, \
+             e.g. \"# Journal\" or \"## Daily Log\""
+                .into(),
+        );
+    }
+    Ok(Some(heading.to_owned()))
 }
 
 pub fn daily_note_path(root: &Path, date: NaiveDate) -> PathBuf {
@@ -120,7 +161,11 @@ pub fn trim_entry(text: &str) -> &str {
     text.trim_matches(|c: char| c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c))
 }
 
-pub fn build_updated_note(data: &[u8], entry: &str) -> Result<Vec<u8>, LogError> {
+pub fn build_updated_note(
+    data: &[u8],
+    entry: &str,
+    placement: &Placement,
+) -> Result<Vec<u8>, LogError> {
     let (bom, body) = match data.strip_prefix(BOM) {
         Some(body) => (BOM, body),
         None => (&b""[..], data),
@@ -130,17 +175,37 @@ pub fn build_updated_note(data: &[u8], entry: &str) -> Result<Vec<u8>, LogError>
         Some(index) if index > 0 && body[index - 1] == b'\r' => "\r\n",
         _ => "\n",
     };
-    let headings: Vec<_> = JOURNAL.find_iter(text).collect();
-    if headings.len() != 1 {
-        return Err(LogError::Structure(headings.len()));
-    }
-    let start = headings[0].end();
-    let insertion = BOUNDARY
-        .find(&text[start..])
-        .map_or(text.len(), |boundary| start + boundary.start());
+    let insertion = match &placement.heading {
+        None => text.len(),
+        Some(heading) => {
+            let pattern = format!(r"(?m)^{}[ \t]*(?:\r?\n|$)", regex::escape(heading));
+            let pattern = Regex::new(&pattern).expect("escaped heading is a valid pattern");
+            let headings: Vec<_> = pattern.find_iter(text).collect();
+            let chosen = match (headings.as_slice(), placement.duplicates) {
+                ([], _) => {
+                    return Err(LogError::HeadingMissing {
+                        heading: heading.clone(),
+                    })
+                }
+                ([only], _) => only,
+                ([first, ..], DuplicateHeading::First) => first,
+                ([.., last], DuplicateHeading::Last) => last,
+                (all, DuplicateHeading::Error) => {
+                    return Err(LogError::HeadingDuplicate {
+                        heading: heading.clone(),
+                        count: all.len(),
+                    })
+                }
+            };
+            let start = chosen.end();
+            BOUNDARY
+                .find(&text[start..])
+                .map_or(text.len(), |boundary| start + boundary.start())
+        }
+    };
     let (before, after) = text.split_at(insertion);
     let double_newline = newline.repeat(2);
-    let leading = if before.ends_with(&double_newline) {
+    let leading = if before.is_empty() || before.ends_with(&double_newline) {
         ""
     } else if before.ends_with(newline) {
         newline
@@ -204,6 +269,7 @@ pub fn append_entry<Tz: TimeZone>(
     root: &Path,
     moment: &DateTime<Tz>,
     use_yesterday: bool,
+    placement: &Placement,
     text: &str,
 ) -> Result<PathBuf, LogError> {
     let text = trim_entry(text);
@@ -217,7 +283,7 @@ pub fn append_entry<Tz: TimeZone>(
         source,
     })?;
     let entry = format!("{} {}", format_timestamp(moment), text);
-    let updated = build_updated_note(&data, &entry)?;
+    let updated = build_updated_note(&data, &entry, placement)?;
     atomic_write(&path, &updated).map_err(|source| LogError::Io {
         operation: "write",
         path: path.clone(),

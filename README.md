@@ -50,6 +50,10 @@ option to choose a different settings file.
   folder with the system folder picker, then **Save** to create the file (and its
   directory).
 - **Valid file:** the current settings are loaded for editing.
+- **Insert under heading:** leave empty to add entries to the end of the note,
+  or enter a Markdown heading such as `# Journal` or `## Daily Log` (1–6 `#`,
+  a space, then text). **If the heading appears more than once** chooses between
+  showing an error (default), using the first, or using the last occurrence.
 - **Invalid file:** every valid value is filled in and the problems are listed.
   Pick new settings and **Save** to replace the file. Unknown fields are dropped.
 
@@ -70,6 +74,8 @@ existing journal folder**. On Windows, escape backslashes in JSON:
 ```json
 {
   "vault_root": "C:\\Notes\\Journal",
+  "heading": "# Journal",
+  "duplicate_heading": "error",
   "use_yesterday_if_today_missing": false
 }
 ```
@@ -78,33 +84,41 @@ On macOS, use the absolute POSIX path to the journal folder. Paths are literal:
 `~` and environment-variable placeholders are not expanded. Create the config
 directory if needed. The app never chooses a default vault, and it replaces
 malformed configuration only when you save from the settings dialog. Unknown
-fields and wrong types are rejected; the fallback field may be omitted and
-defaults to `false`.
+fields and wrong types are rejected. Optional fields: `heading` defaults to `""`
+(end of file), `duplicate_heading` to `"error"` (or `"first"`/`"last"`), and the
+fallback to `false`. Configurations written before the heading setting existed
+therefore append to the end of the note until a heading is set.
 
 Configuration reloads before every save and checkbox change. Correct the file
 (externally or with the gear) and press Enter to retry without losing your draft.
 Checkbox changes and the settings dialog rewrite the JSON without preserving
-formatting; the checkbox keeps the configured root. Keep personal configuration and notes outside the source repository.
+formatting; the checkbox keeps the configured root and heading. Keep personal
+configuration and notes outside the source repository.
 
 ### Note-writing contract
 
 Daily notes must already exist in the layout
 `daily` > `YYYY` > `YYYY-MM` > `YYYY-MM-DD.md`.
 
-The Rust core ports the inspected `log.py` behavior without shipping or running it:
+The Rust core is based on the inspected `log.py` behavior, without shipping or
+running it, but with a configurable heading:
 
 - Capture local time once and prefix the outer-trimmed entry with a timestamp
   such as `[1:05pm]`. Preserve internal spaces, Unicode, and line breaks.
 - Use today's note. If missing, unchecked fallback reports an error; checked
   fallback uses yesterday automatically. Never create notes. Yesterday is the
   previous calendar date, including across DST.
-- Require exactly one `# Journal` line, optionally followed by spaces or tabs.
-  Insert before the first later `## ` heading or at EOF.
-- Follow the original text rules, not a Markdown parser: another H1 does not end
-  the section, H3 is not a delimiter, and fenced headings are not ignored.
+- With no heading configured, append at the end of the note, separated by a
+  blank line (an empty note receives just the entry).
+- With a heading, find lines exactly equal to it (case-sensitive, same number of
+  `#`), optionally followed by spaces or tabs. A missing heading is an error;
+  duplicates are an error unless the first or last occurrence is selected.
+  Insert before the next heading of **any** level (`#` to `######`, a space, and
+  text) or at EOF. `#tag`, a bare `##`, and lines with 7+ `#` are not headings.
+- Follow text rules, not a Markdown parser: fenced headings are not ignored.
 - Preserve UTF-8 BOM and existing content. Detect LF/CRLF from the first LF for
   inserted separators; do not normalize entry-internal newlines. Invalid UTF-8
-  and missing/duplicate Journal headings are errors.
+  is an error.
 - Write and sync a same-directory temporary file, preserve permissions, and
   atomically replace the note. Failed writes never truncate the destination.
 

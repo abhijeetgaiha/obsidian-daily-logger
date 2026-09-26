@@ -23,7 +23,8 @@ impl From<journal_core::LogError> for AppError {
             LogError::TodayMissing { .. } => "today_missing",
             LogError::NotesMissing { .. } => "notes_missing",
             LogError::DateRange => "date_range",
-            LogError::Structure(_) => "note_structure",
+            LogError::HeadingMissing { .. } => "heading_missing",
+            LogError::HeadingDuplicate { .. } => "heading_duplicate",
             LogError::Encoding(_) => "note_encoding",
             LogError::Io { .. } => "note_io",
         };

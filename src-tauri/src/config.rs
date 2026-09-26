@@ -6,10 +6,34 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DuplicateHeading {
+    #[default]
+    Error,
+    First,
+    Last,
+}
+
+impl From<DuplicateHeading> for journal_core::DuplicateHeading {
+    fn from(value: DuplicateHeading) -> Self {
+        match value {
+            DuplicateHeading::Error => Self::Error,
+            DuplicateHeading::First => Self::First,
+            DuplicateHeading::Last => Self::Last,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub vault_root: PathBuf,
+    /// Empty appends to the end of the note; otherwise a Markdown heading such as "# Journal".
+    #[serde(default)]
+    pub heading: String,
+    #[serde(default)]
+    pub duplicate_heading: DuplicateHeading,
     #[serde(default)]
     pub use_yesterday_if_today_missing: bool,
 }
@@ -31,6 +55,8 @@ pub struct Settings {
 #[serde(deny_unknown_fields)]
 pub struct SettingsForm {
     pub vault_root: Option<String>,
+    pub heading: String,
+    pub duplicate_heading: DuplicateHeading,
     pub use_yesterday_if_today_missing: bool,
 }
 
@@ -46,10 +72,10 @@ fn error(path: &Path, detail: impl std::fmt::Display) -> AppError {
     AppError::new(
         "configuration",
         format!(
-            "Cannot use {}: {detail}\nUse the Settings gear to choose a journal folder, or edit \
-             this JSON file with an absolute \"vault_root\" folder and a boolean \
-             \"use_yesterday_if_today_missing\". Press Enter after correcting it; your draft \
-             will be retained.",
+            "Cannot use {}: {detail}\nUse the Settings gear to fix it, or edit this JSON file: \
+             \"vault_root\" must be an absolute folder, \"heading\" empty or a Markdown \
+             heading such as \"# Journal\", and \"use_yesterday_if_today_missing\" a boolean. \
+             Press Enter after correcting it; your draft will be retained.",
             path.display()
         ),
     )
@@ -69,8 +95,12 @@ fn validate_root(root: &Path) -> Result<(), String> {
 
 pub fn load(path: &Path) -> Result<Config, AppError> {
     let bytes = fs::read(path).map_err(|detail| error(path, detail))?;
-    let config: Config = serde_json::from_slice(&bytes).map_err(|detail| error(path, detail))?;
+    let mut config: Config =
+        serde_json::from_slice(&bytes).map_err(|detail| error(path, detail))?;
     validate_root(&config.vault_root).map_err(|detail| error(path, detail))?;
+    config.heading = journal_core::validate_heading(&config.heading)
+        .map_err(|detail| error(path, detail))?
+        .unwrap_or_default();
     Ok(config)
 }
 
@@ -113,7 +143,28 @@ pub fn read_form(path: &Path) -> FormResult {
                     ("use_yesterday_if_today_missing", serde_json::Value::Bool(enabled)) => {
                         result.form.use_yesterday_if_today_missing = enabled;
                     }
-                    ("vault_root" | "use_yesterday_if_today_missing", _) => {
+                    ("heading", serde_json::Value::String(heading)) => {
+                        if let Err(detail) = journal_core::validate_heading(&heading) {
+                            problems.push(detail);
+                        }
+                        result.form.heading = heading;
+                    }
+                    ("duplicate_heading", value @ serde_json::Value::String(_)) => {
+                        match serde_json::from_value(value) {
+                            Ok(policy) => result.form.duplicate_heading = policy,
+                            Err(_) => problems.push(
+                                "\"duplicate_heading\" must be \"error\", \"first\", or \"last\""
+                                    .into(),
+                            ),
+                        }
+                    }
+                    (
+                        "vault_root"
+                        | "use_yesterday_if_today_missing"
+                        | "heading"
+                        | "duplicate_heading",
+                        _,
+                    ) => {
                         problems.push(format!("\"{key}\" has the wrong type"));
                     }
                     _ => problems.push(format!("unknown setting \"{key}\" will be removed")),
@@ -154,8 +205,13 @@ pub fn save_form(path: &Path, form: &SettingsForm, today: NaiveDate) -> Result<S
             format!("Cannot use {root} as the journal folder: {detail}"),
         )
     })?;
+    let heading = journal_core::validate_heading(&form.heading)
+        .map_err(|detail| AppError::new("settings", format!("Cannot use this heading: {detail}.")))?
+        .unwrap_or_default();
     let config = Config {
         vault_root: PathBuf::from(root),
+        heading,
+        duplicate_heading: form.duplicate_heading,
         use_yesterday_if_today_missing: form.use_yesterday_if_today_missing,
     };
     write(path, &config).map_err(|detail| {
@@ -173,6 +229,13 @@ impl Config {
             config_path: path.display().to_string(),
             use_yesterday_if_today_missing: self.use_yesterday_if_today_missing,
             note: self.note_label(today),
+        }
+    }
+
+    pub fn placement(&self) -> journal_core::Placement {
+        journal_core::Placement {
+            heading: Some(self.heading.clone()).filter(|heading| !heading.is_empty()),
+            duplicates: self.duplicate_heading.into(),
         }
     }
 
@@ -314,6 +377,7 @@ mod tests {
         SettingsForm {
             vault_root: root.map(|root| root.display().to_string()),
             use_yesterday_if_today_missing: enabled,
+            ..Default::default()
         }
     }
 
@@ -370,6 +434,7 @@ mod tests {
                 SettingsForm {
                     vault_root: Some("relative".into()),
                     use_yesterday_if_today_missing: false,
+                    ..Default::default()
                 },
                 "absolute path",
             ),
@@ -378,6 +443,7 @@ mod tests {
                 SettingsForm {
                     vault_root: Some(missing.clone()),
                     use_yesterday_if_today_missing: false,
+                    ..Default::default()
                 },
                 "cannot access vault_root",
             ),
@@ -445,6 +511,7 @@ mod tests {
             let form = SettingsForm {
                 vault_root,
                 use_yesterday_if_today_missing: true,
+                ..Default::default()
             };
             let error = save_form(&path, &form, today()).unwrap_err();
             assert_eq!(error.code, "settings");
@@ -471,5 +538,125 @@ mod tests {
         assert!(!load(&path).unwrap().use_yesterday_if_today_missing);
         save_form(&path, &form(Some(root.path()), true), today()).unwrap();
         assert_eq!(crate::draft::load(&path).unwrap(), "keep me");
+    }
+
+    fn write_json(path: &Path, value: serde_json::Value) {
+        fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn heading_settings_default_to_end_of_file_and_round_trip() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.json");
+        write_config(&path, root.path());
+        let config = load(&path).unwrap();
+        assert_eq!(config.heading, "");
+        assert_eq!(config.duplicate_heading, DuplicateHeading::Error);
+        assert_eq!(config.placement(), journal_core::Placement::default());
+        write_json(
+            &path,
+            serde_json::json!({
+                "vault_root": root.path(),
+                "heading": "  ## Daily Log ",
+                "duplicate_heading": "last",
+            }),
+        );
+        let config = load(&path).unwrap();
+        assert_eq!(
+            config.placement(),
+            journal_core::Placement {
+                heading: Some("## Daily Log".into()),
+                duplicates: journal_core::DuplicateHeading::Last,
+            }
+        );
+        set_fallback(&path, true, today()).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["heading"], "## Daily Log");
+        assert_eq!(saved["duplicate_heading"], "last");
+        assert_eq!(saved["use_yesterday_if_today_missing"], true);
+    }
+
+    #[test]
+    fn invalid_heading_settings_are_rejected() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.json");
+        for (field, value) in [
+            ("heading", serde_json::json!("Journal")),
+            ("heading", serde_json::json!("#Journal")),
+            ("heading", serde_json::json!(1)),
+            ("duplicate_heading", serde_json::json!("both")),
+            ("duplicate_heading", serde_json::json!(true)),
+        ] {
+            let mut config = serde_json::json!({ "vault_root": root.path() });
+            config[field] = value;
+            write_json(&path, config);
+            assert!(load(&path).is_err(), "{field}");
+            let before = fs::read(&path).unwrap();
+            assert!(set_fallback(&path, true, today()).is_err());
+            assert_eq!(fs::read(&path).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn read_form_prefills_heading_settings_and_reports_problems() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.json");
+        write_json(
+            &path,
+            serde_json::json!({
+                "vault_root": root.path(),
+                "heading": "## Daily Log",
+                "duplicate_heading": "first",
+            }),
+        );
+        let valid = read_form(&path);
+        assert_eq!(valid.issue, None);
+        assert_eq!(valid.form.heading, "## Daily Log");
+        assert_eq!(valid.form.duplicate_heading, DuplicateHeading::First);
+        write_json(
+            &path,
+            serde_json::json!({
+                "vault_root": root.path(),
+                "heading": "Daily Log",
+                "duplicate_heading": "both",
+            }),
+        );
+        let invalid = read_form(&path);
+        assert_eq!(invalid.form.heading, "Daily Log");
+        assert_eq!(invalid.form.duplicate_heading, DuplicateHeading::Error);
+        let issue = invalid.issue.unwrap();
+        assert!(issue.contains("the heading must be"), "{issue}");
+        assert!(issue.contains("\"duplicate_heading\" must be"), "{issue}");
+        write_json(
+            &path,
+            serde_json::json!({ "vault_root": root.path(), "heading": 7, "duplicate_heading": 1 }),
+        );
+        let issue = read_form(&path).issue.unwrap();
+        assert!(issue.contains("\"heading\" has the wrong type"), "{issue}");
+        assert!(
+            issue.contains("\"duplicate_heading\" has the wrong type"),
+            "{issue}"
+        );
+    }
+
+    #[test]
+    fn save_form_trims_and_validates_the_heading() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.json");
+        let mut form = form(Some(root.path()), false);
+        form.heading = "Journal".into();
+        let error = save_form(&path, &form, today()).unwrap_err();
+        assert_eq!(error.code, "settings");
+        assert!(error.message.contains("heading"), "{}", error.message);
+        assert!(!path.exists());
+        form.heading = "  # Journal  ".into();
+        form.duplicate_heading = DuplicateHeading::First;
+        save_form(&path, &form, today()).unwrap();
+        let config = load(&path).unwrap();
+        assert_eq!(config.heading, "# Journal");
+        assert_eq!(config.duplicate_heading, DuplicateHeading::First);
+        form.heading = "   ".into();
+        save_form(&path, &form, today()).unwrap();
+        assert_eq!(load(&path).unwrap().placement().heading, None);
     }
 }

@@ -103,6 +103,7 @@ impl Session {
             &config.vault_root,
             moment,
             config.use_yesterday_if_today_missing,
+            &config.placement(),
             text,
         )?;
         self.saved = true;
@@ -337,6 +338,7 @@ mod tests {
         let form = SettingsForm {
             vault_root: Some(root.path().display().to_string()),
             use_yesterday_if_today_missing: false,
+            ..Default::default()
         };
         let mut session = Session {
             saved: true,
@@ -353,5 +355,36 @@ mod tests {
         session.exiting = false;
         session.save_settings(&path, &form, today).unwrap();
         assert_eq!(config::load(&path).unwrap().vault_root, root.path());
+    }
+
+    #[test]
+    fn save_inserts_under_the_configured_heading() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.json");
+        let moment = FixedOffset::east_opt(0)
+            .unwrap()
+            .with_ymd_and_hms(2026, 9, 22, 13, 5, 0)
+            .unwrap();
+        let note = journal_core::daily_note_path(root.path(), moment.date_naive());
+        fs::create_dir_all(note.parent().unwrap()).unwrap();
+        fs::write(&note, b"# Day\n## Log\nold\n### Later\n").unwrap();
+        let mut form = SettingsForm {
+            vault_root: Some(root.path().display().to_string()),
+            heading: "## Missing".into(),
+            ..Default::default()
+        };
+        config::save_form(&path, &form, moment.date_naive()).unwrap();
+        let mut session = Session::default();
+        assert_eq!(
+            session.save(&path, &moment, "entry").unwrap_err().code,
+            "heading_missing"
+        );
+        form.heading = "## Log".into();
+        config::save_form(&path, &form, moment.date_naive()).unwrap();
+        session.save(&path, &moment, "entry").unwrap();
+        assert_eq!(
+            fs::read_to_string(note).unwrap(),
+            "# Day\n## Log\nold\n\n[1:05pm] entry\n\n### Later\n"
+        );
     }
 }

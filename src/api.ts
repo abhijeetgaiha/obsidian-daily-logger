@@ -12,8 +12,12 @@ export interface Settings {
   note: NoteLabel | null;
 }
 
+export type DuplicateHeading = "error" | "first" | "last";
+
 export interface SettingsForm {
   vault_root: string | null;
+  heading: string;
+  duplicate_heading: DuplicateHeading;
   use_yesterday_if_today_missing: boolean;
 }
 

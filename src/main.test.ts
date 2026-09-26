@@ -10,10 +10,12 @@ const initial: Settings = {
   note: { name: "2026-09-26", is_yesterday: false },
 };
 
+const noHeading = { heading: "", duplicate_heading: "error" } as const;
+
 const validForm: FormResult = {
   config_path: "/config/config.json",
   exists: true,
-  form: { vault_root: "/vault", use_yesterday_if_today_missing: false },
+  form: { vault_root: "/vault", ...noHeading, use_yesterday_if_today_missing: false },
   issue: null,
 };
 
@@ -63,6 +65,9 @@ async function setup(api = mockApi()) {
     folder: root.querySelector<HTMLSpanElement>("#settings-folder")!,
     choose: root.querySelector<HTMLButtonElement>("#settings-choose")!,
     dialogFallback: root.querySelector<HTMLInputElement>("#settings-fallback")!,
+    heading: root.querySelector<HTMLInputElement>("#settings-heading")!,
+    headingProblem: root.querySelector<HTMLParagraphElement>("#settings-heading-problem")!,
+    duplicates: root.querySelector<HTMLSelectElement>("#settings-duplicates")!,
     dialogMessage: root.querySelector<HTMLParagraphElement>("#settings-message")!,
     saveButton: root.querySelector<HTMLButtonElement>("#settings-save")!,
     cancelButton: root.querySelector<HTMLButtonElement>("#settings-cancel")!,
@@ -368,7 +373,10 @@ describe("minimal journal window", () => {
   it("opens the dialog with the existing settings loaded", async () => {
     const api = mockApi();
     api.readSettingsForm.mockResolvedValue({
-      ...validForm, form: { vault_root: "/vault", use_yesterday_if_today_missing: true },
+      ...validForm, form: {
+        vault_root: "/vault", heading: "## Daily Log", duplicate_heading: "last",
+        use_yesterday_if_today_missing: true,
+      },
     });
     const { dialog, folder, dialogFallback, issue, saveButton, journal, entry, choose } =
       await openSettings(api);
@@ -388,7 +396,7 @@ describe("minimal journal window", () => {
     api.readSettingsForm.mockResolvedValue({
       config_path: "/config/config.json",
       exists: false,
-      form: { vault_root: null, use_yesterday_if_today_missing: false },
+      form: { vault_root: null, ...noHeading, use_yesterday_if_today_missing: false },
       issue: null,
     });
     const { folder, issue, saveButton, choose, dialogFallback, dialog, checkbox, message } =
@@ -406,7 +414,7 @@ describe("minimal journal window", () => {
     saveButton.click();
     await flush();
     expect(api.saveSettings).toHaveBeenCalledExactlyOnceWith({
-      vault_root: "/picked", use_yesterday_if_today_missing: true,
+      vault_root: "/picked", ...noHeading, use_yesterday_if_today_missing: true,
     });
     expect(dialog.hidden).toBe(true);
     expect(checkbox.checked).toBe(true);
@@ -418,7 +426,7 @@ describe("minimal journal window", () => {
     const api = mockApi();
     api.readSettingsForm.mockResolvedValue({
       ...validForm,
-      form: { vault_root: "/gone", use_yesterday_if_today_missing: false },
+      form: { vault_root: "/gone", ...noHeading, use_yesterday_if_today_missing: false },
       issue: "<b>vault_root must be an existing directory</b>",
     });
     const { folder, issue, saveButton, choose } = await openSettings(api);
@@ -432,7 +440,7 @@ describe("minimal journal window", () => {
     saveButton.click();
     await flush();
     expect(api.saveSettings).toHaveBeenCalledWith({
-      vault_root: "/picked", use_yesterday_if_today_missing: false,
+      vault_root: "/picked", ...noHeading, use_yesterday_if_today_missing: false,
     });
   });
 
@@ -549,6 +557,71 @@ describe("minimal journal window", () => {
     gear.click();
     await flush();
     expect(api.readSettingsForm).not.toHaveBeenCalled();
+  });
+
+  it("loads the heading settings and enables the dropdown only with a heading", async () => {
+    const api = mockApi();
+    api.readSettingsForm.mockResolvedValue({
+      ...validForm,
+      form: { ...validForm.form, heading: "## Daily Log", duplicate_heading: "last" },
+    });
+    const { heading, duplicates, headingProblem } = await openSettings(api);
+    expect(heading.value).toBe("## Daily Log");
+    expect(duplicates.value).toBe("last");
+    expect(duplicates.disabled).toBe(false);
+    expect(headingProblem.textContent).toBe("");
+    heading.value = "  ";
+    heading.dispatchEvent(new Event("input"));
+    expect(duplicates.disabled).toBe(true);
+    expect(heading.placeholder).toContain("end of file");
+  });
+
+  it("validates the heading as it is typed and blocks saving invalid headings", async () => {
+    const api = mockApi();
+    const { heading, headingProblem, saveButton } = await openSettings(api);
+    for (const invalid of ["Journal", "#Journal", "####### Seven", "#"]) {
+      heading.value = invalid;
+      heading.dispatchEvent(new Event("input"));
+      expect(headingProblem.textContent, invalid).toContain("# Journal");
+      expect(heading.getAttribute("aria-invalid")).toBe("true");
+      expect(saveButton.disabled, invalid).toBe(true);
+    }
+    for (const valid of ["", "# Journal", "  ## Daily Log  ", "######\tSix"]) {
+      heading.value = valid;
+      heading.dispatchEvent(new Event("input"));
+      expect(headingProblem.textContent, valid).toBe("");
+      expect(saveButton.disabled, valid).toBe(false);
+    }
+  });
+
+  it("saves the heading and duplicate policy with the other settings", async () => {
+    const api = mockApi();
+    const { heading, duplicates, saveButton, entry } = await openSettings(api);
+    heading.value = "## Daily Log";
+    heading.dispatchEvent(new Event("input"));
+    duplicates.value = "first";
+    duplicates.dispatchEvent(new Event("change"));
+    heading.focus();
+    key(heading, "Enter");
+    await flush();
+    expect(api.submit).not.toHaveBeenCalled();
+    saveButton.click();
+    await flush();
+    expect(api.saveSettings).toHaveBeenCalledExactlyOnceWith({
+      vault_root: "/vault", heading: "## Daily Log", duplicate_heading: "first",
+      use_yesterday_if_today_missing: false,
+    });
+    expect(document.activeElement).toBe(entry);
+  });
+
+  it("renders a stored heading as text", async () => {
+    const api = mockApi();
+    api.readSettingsForm.mockResolvedValue({
+      ...validForm, form: { ...validForm.form, heading: "# <b>x</b>" },
+    });
+    const { heading, dialog } = await openSettings(api);
+    expect(heading.value).toBe("# <b>x</b>");
+    expect(dialog.querySelector("b")).toBeNull();
   });
 
   it("formats unknown errors explicitly", () => {

@@ -1,5 +1,6 @@
 import {
-  errorMessage, type FormResult, type JournalApi, type Settings, type SettingsForm,
+  errorMessage, type DuplicateHeading, type FormResult, type JournalApi, type Settings,
+  type SettingsForm,
 } from "./api";
 
 interface FieldContext {
@@ -12,6 +13,7 @@ interface FieldContext {
 interface Field {
   element: HTMLElement;
   render(form: SettingsForm, disabled: boolean): void;
+  valid?(form: SettingsForm): boolean;
   destroy(): void;
 }
 
@@ -44,6 +46,58 @@ function folderField(api: JournalApi, context: FieldContext): Field {
   };
 }
 
+// Mirrors journal_core::validate_heading; the backend validates authoritatively on save.
+export function headingProblem(heading: string): string | undefined {
+  const trimmed = heading.trim();
+  if (trimmed === "" || /^#{1,6}[ \t]+\S/.test(trimmed)) return undefined;
+  return "Use 1–6 # characters, a space, and text, e.g. # Journal or ## Daily Log.";
+}
+
+function headingField(_api: JournalApi, context: FieldContext): Field {
+  const element = document.createElement("div");
+  element.className = "setting";
+  element.innerHTML = `
+    <label class="setting-label" for="settings-heading">Insert under heading</label>
+    <input id="settings-heading" type="text" placeholder="Empty: add to end of file"
+      spellcheck="false" autocomplete="off" aria-describedby="settings-heading-problem" />
+    <p id="settings-heading-problem" class="error"></p>
+    <label class="sub-setting">
+      If the heading appears more than once
+      <select id="settings-duplicates">
+        <option value="error">Show an error</option>
+        <option value="first">Use the first</option>
+        <option value="last">Use the last</option>
+      </select>
+    </label>
+  `;
+  const input = element.querySelector<HTMLInputElement>("#settings-heading")!;
+  const problem = element.querySelector<HTMLParagraphElement>("#settings-heading-problem")!;
+  const select = element.querySelector<HTMLSelectElement>("#settings-duplicates")!;
+  const onInput = () => context.update({ heading: input.value });
+  const onChange = () => context.update({
+    duplicate_heading: select.value as DuplicateHeading,
+  });
+  input.addEventListener("input", onInput);
+  select.addEventListener("change", onChange);
+  return {
+    element,
+    render(form, disabled) {
+      if (input.value !== form.heading) input.value = form.heading;
+      input.disabled = disabled;
+      const message = headingProblem(form.heading);
+      problem.textContent = message ?? "";
+      input.setAttribute("aria-invalid", String(message !== undefined));
+      select.value = form.duplicate_heading;
+      select.disabled = disabled || form.heading.trim() === "";
+    },
+    valid: (form) => headingProblem(form.heading) === undefined,
+    destroy() {
+      input.removeEventListener("input", onInput);
+      select.removeEventListener("change", onChange);
+    },
+  };
+}
+
 function fallbackField(_api: JournalApi, context: FieldContext): Field {
   const element = document.createElement("label");
   element.className = "setting fallback";
@@ -64,7 +118,7 @@ function fallbackField(_api: JournalApi, context: FieldContext): Field {
   };
 }
 
-const fieldFactories = [folderField, fallbackField];
+const fieldFactories = [folderField, headingField, fallbackField];
 
 export interface SettingsHooks {
   onSaved(settings: Settings): void;
@@ -104,7 +158,12 @@ export function mountSettingsDialog(
   const message = overlay.querySelector<HTMLParagraphElement>("#settings-message")!;
   const cancelButton = overlay.querySelector<HTMLButtonElement>("#settings-cancel")!;
   const saveButton = overlay.querySelector<HTMLButtonElement>("#settings-save")!;
-  let form: SettingsForm = { vault_root: null, use_yesterday_if_today_missing: false };
+  let form: SettingsForm = {
+    vault_root: null,
+    heading: "",
+    duplicate_heading: "error",
+    use_yesterday_if_today_missing: false,
+  };
   let open = false;
   let busy = false;
 
@@ -112,7 +171,8 @@ export function mountSettingsDialog(
     overlay.hidden = !open;
     fields.forEach((field) => field.render(form, busy));
     cancelButton.disabled = busy;
-    saveButton.disabled = busy || form.vault_root === null;
+    saveButton.disabled = busy || form.vault_root === null
+      || fields.some((field) => field.valid?.(form) === false);
     overlay.setAttribute("aria-busy", String(busy));
   }
 
