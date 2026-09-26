@@ -18,6 +18,11 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             arch: x64
+            pe_machine: "0x8664"
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            arch: arm64
+            pe_machine: "0xAA64"
           - os: macos-15
             target: aarch64-apple-darwin
             arch: arm64
@@ -48,14 +53,17 @@ jobs:
       - name: Verify Windows binary and installer
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+          PE_MACHINE: ${{ matrix.pe_machine }}
         run: |
-          $binary = 'target\x86_64-pc-windows-msvc\release\journal-logger.exe'
+          $binary = "target\$env:TARGET\release\journal-logger.exe"
           $bytes = [IO.File]::ReadAllBytes((Resolve-Path $binary))
           $pe = [BitConverter]::ToInt32($bytes, 0x3c)
-          if ([BitConverter]::ToUInt16($bytes, $pe + 4) -ne 0x8664) {
-            throw 'Expected an x64 Windows executable'
+          if ([BitConverter]::ToUInt16($bytes, $pe + 4) -ne [Convert]::ToUInt16($env:PE_MACHINE, 16)) {
+            throw "Expected a $env:TARGET Windows executable"
           }
-          $installers = @(Get-ChildItem 'target\x86_64-pc-windows-msvc\release\bundle\nsis\*-setup.exe')
+          $installers = @(Get-ChildItem "target\$env:TARGET\release\bundle\nsis\*-setup.exe")
           if ($installers.Count -ne 1) { throw 'Expected one NSIS installer' }
       - name: Verify and archive the macOS application
         if: runner.os == 'macOS'
@@ -68,8 +76,8 @@ jobs:
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: journal-logger-windows-x64
-          path: target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+          name: journal-logger-windows-${{ matrix.arch }}
+          path: target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe
           if-no-files-found: error
       - name: Upload macOS bundles
         if: runner.os == 'macOS'

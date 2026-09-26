@@ -1,8 +1,9 @@
 # Journal Logger
 
 A frameless journal-entry window built with Tauri 2, framework-free TypeScript,
-and a pure Rust logging core. The same source builds on Windows x64 and macOS
-Apple Silicon. No Python, Node, or development server is needed at runtime.
+and a pure Rust logging core. The same source builds on Windows x64, Windows
+ARM64, and macOS Apple Silicon. No Python, Node, or development server is needed
+at runtime.
 
 ## Use
 
@@ -165,6 +166,11 @@ MSVC x64 tools, and a Windows SDK; the `x86_64-pc-windows-msvc` Rust toolchain;
 WebView2 Evergreen Runtime. The installer downloads WebView2 if absent, requiring
 network access for that initial setup.
 
+**Windows ARM64:** as for x64, plus the Visual Studio component "MSVC v143 - VS 2022
+C++ ARM64/ARM64EC build tools" and the `aarch64-pc-windows-msvc` Rust target
+(`rustup target add aarch64-pc-windows-msvc`). An x64 Rust toolchain running under
+emulation can cross-compile it.
+
 **macOS Apple Silicon:** Xcode Command Line Tools (`xcode-select --install`) and
 the `aarch64-apple-darwin` Rust toolchain. WebKit is provided by macOS.
 The configured minimum macOS version is 11.0. No Windows machine or generated
@@ -207,10 +213,14 @@ Windows produces an unsigned NSIS installer; macOS produces an Apple Silicon
 `.app` and `.dmg`. Outputs are below the workspace `target` directory; explicit
 `--target` builds use that target's subdirectory.
 
-Windows ARM developers can build the supported x64 package with an x64 Rust
-toolchain under Windows emulation and
-`npm run tauri build -- --target x86_64-pc-windows-msvc`.
-Windows ARM packaging is not a release target.
+Windows ARM64 needs an explicit target, because the packager names the installer
+after the host OS rather than the compiled binary. On an ARM64 PC with an x64 Rust
+toolchain, a plain build produces an x64 app in an installer labelled `arm64`:
+
+```text
+npm run tauri build -- --target aarch64-pc-windows-msvc
+npm run tauri build -- --target x86_64-pc-windows-msvc
+```
 
 There is no Python sidecar, shell plugin, or JavaScript filesystem plugin.
 Rust handles all journal access and timestamps. The folder picker comes from
@@ -221,10 +231,11 @@ restrictive CSP and window-scoped command permissions.
 ## GitHub Actions and unsigned downloads
 
 `ci.yml` runs frontend and Rust checks and compiles the **full Tauri application**
-on Windows x64 and native ARM64 macOS, from the same commit. Both must pass.
+on Windows x64, native Windows ARM64, and native ARM64 macOS, from the same commit.
+All must pass.
 
-`build.yml` runs manually or on `v*` tags and uploads private Windows NSIS and
-macOS app/DMG artifacts. No public release or updater is created. Workflows use
+`build.yml` runs manually or on `v*` tags and uploads private Windows x64 and ARM64
+NSIS installers plus macOS app/DMG artifacts. No public release or updater is created. Workflows use
 pinned actions, locked dependency resolution, and read-only repository
 permissions. The account needs an available private-repository Actions allowance.
 
