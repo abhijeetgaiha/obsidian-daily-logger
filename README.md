@@ -18,11 +18,14 @@ Launch normally and type into the focused text box.
   shown even while the checkbox is unchecked, dimmed to show it will not be used
   until the box is ticked. When neither note exists, or the configuration is
   invalid, it shows **No File Selected**. The name refreshes at startup, after
-  checkbox changes, and on each Enter.
+  checkbox changes, after saving settings, and on each Enter.
+- The **gear** to the right of the file name opens the settings dialog for the
+  standard `config.json` (see below). Escape or Cancel closes the dialog without
+  exiting; Enter does not log the entry while it is open.
 - Errors retain the draft. Failed preference writes restore the saved checkbox.
 
-There is no tray, global shortcut, background mode, folder picker, or command-line
-logging interface. Drag the narrow empty strip above the text box to move it.
+There is no tray, global shortcut, background mode, or command-line logging
+interface. Drag the narrow empty strip above the text box to move it.
 
 Drafts are stored as UTF-8 plaintext in `draft.txt` beside `config.json`, not in
 the journal. They work even when vault configuration is missing or invalid.
@@ -39,8 +42,22 @@ close/quit and forced termination do not update an unfinished draft.
 
 ### Configure the journal folder
 
-Create `config.json` in the application's per-user configuration directory.
-Configuration errors display the exact expected path:
+Click the **gear** in the bottom-right corner. The settings dialog always uses
+`config.json` in the application's per-user configuration directory; there is no
+option to choose a different settings file.
+
+- **No file yet:** the form starts empty. Use **Choose…** to pick the journal
+  folder with the system folder picker, then **Save** to create the file (and its
+  directory).
+- **Valid file:** the current settings are loaded for editing.
+- **Invalid file:** every valid value is filled in and the problems are listed.
+  Pick new settings and **Save** to replace the file. Unknown fields are dropped.
+
+Settings are validated before anything is written; save errors stay in the dialog
+and never affect your draft. Settings cannot be changed after an entry is logged.
+
+You can also edit the file by hand. Configuration errors display the exact
+expected path:
 
 | OS | Location |
 | --- | --- |
@@ -59,14 +76,15 @@ existing journal folder**. On Windows, escape backslashes in JSON:
 
 On macOS, use the absolute POSIX path to the journal folder. Paths are literal:
 `~` and environment-variable placeholders are not expanded. Create the config
-directory if needed. The app never chooses a default vault or replaces malformed
-configuration. Unknown fields and wrong types are rejected; the fallback field
-may be omitted and defaults to `false`.
+directory if needed. The app never chooses a default vault, and it replaces
+malformed configuration only when you save from the settings dialog. Unknown
+fields and wrong types are rejected; the fallback field may be omitted and
+defaults to `false`.
 
 Configuration reloads before every save and checkbox change. Correct the file
-externally and press Enter to retry without losing your draft. Checkbox changes
-rewrite the JSON, preserving the configured root but not formatting. Keep personal
-configuration and notes outside the source repository.
+(externally or with the gear) and press Enter to retry without losing your draft.
+Checkbox changes and the settings dialog rewrite the JSON without preserving
+formatting; the checkbox keeps the configured root. Keep personal configuration and notes outside the source repository.
 
 ### Note-writing contract
 
@@ -165,7 +183,9 @@ toolchain under Windows emulation and
 Windows ARM packaging is not a release target.
 
 There is no Python sidecar, shell plugin, or JavaScript filesystem plugin.
-Rust handles all journal access and timestamps. Assets are local, with a
+Rust handles all journal access and timestamps. The folder picker comes from
+`tauri-plugin-dialog`, invoked only from Rust; the webview is granted no dialog
+or filesystem permissions. Assets are local, with a
 restrictive CSP and window-scoped command permissions.
 
 ## GitHub Actions and unsigned downloads
@@ -188,5 +208,6 @@ If macOS says the app "is damaged", the bundle signature is missing or broken;
 `codesign --verify --deep --strict` on the `.app` must pass.
 
 Native builds and unit tests do not establish graphical behavior on a Mac.
-Manually check focus, keys, sticky preferences, errors, dragging, and note output
+Manually check focus, keys, sticky preferences, the settings dialog and folder
+picker, errors, dragging, and note output
 against a disposable vault, plus the downloaded app's Gatekeeper experience.

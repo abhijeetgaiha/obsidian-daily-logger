@@ -27,30 +27,144 @@ pub struct Settings {
     pub note: Option<NoteLabel>,
 }
 
+#[derive(Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SettingsForm {
+    pub vault_root: Option<String>,
+    pub use_yesterday_if_today_missing: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FormResult {
+    pub config_path: String,
+    pub exists: bool,
+    pub form: SettingsForm,
+    pub issue: Option<String>,
+}
+
 fn error(path: &Path, detail: impl std::fmt::Display) -> AppError {
     AppError::new(
         "configuration",
         format!(
-            "Cannot use {}: {detail}\nCreate or edit this JSON file with an absolute \
-             \"vault_root\" folder and a boolean \"use_yesterday_if_today_missing\". \
-             Press Enter after correcting it; your draft will be retained.",
+            "Cannot use {}: {detail}\nUse the Settings gear to choose a journal folder, or edit \
+             this JSON file with an absolute \"vault_root\" folder and a boolean \
+             \"use_yesterday_if_today_missing\". Press Enter after correcting it; your draft \
+             will be retained.",
             path.display()
         ),
     )
 }
 
+fn validate_root(root: &Path) -> Result<(), String> {
+    if !root.is_absolute() {
+        return Err("vault_root must be a nonempty absolute path".into());
+    }
+    let metadata =
+        fs::metadata(root).map_err(|detail| format!("cannot access vault_root: {detail}"))?;
+    if !metadata.is_dir() {
+        return Err("vault_root must be an existing directory".into());
+    }
+    Ok(())
+}
+
 pub fn load(path: &Path) -> Result<Config, AppError> {
     let bytes = fs::read(path).map_err(|detail| error(path, detail))?;
     let config: Config = serde_json::from_slice(&bytes).map_err(|detail| error(path, detail))?;
-    if !config.vault_root.is_absolute() {
-        return Err(error(path, "vault_root must be a nonempty absolute path"));
-    }
-    let metadata = fs::metadata(&config.vault_root)
-        .map_err(|detail| error(path, format!("cannot access vault_root: {detail}")))?;
-    if !metadata.is_dir() {
-        return Err(error(path, "vault_root must be an existing directory"));
-    }
+    validate_root(&config.vault_root).map_err(|detail| error(path, detail))?;
     Ok(config)
+}
+
+fn write(path: &Path, config: &Config) -> Result<(), String> {
+    let mut bytes = serde_json::to_vec_pretty(config).map_err(|detail| detail.to_string())?;
+    bytes.push(b'\n');
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|detail| detail.to_string())?;
+    }
+    journal_core::atomic_write_or_create(path, &bytes).map_err(|detail| detail.to_string())
+}
+
+/// Reads whatever settings are valid so the settings dialog can show them for editing.
+pub fn read_form(path: &Path) -> FormResult {
+    let mut result = FormResult {
+        config_path: path.display().to_string(),
+        exists: true,
+        form: SettingsForm::default(),
+        issue: None,
+    };
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(detail) if detail.kind() == std::io::ErrorKind::NotFound => {
+            result.exists = false;
+            return result;
+        }
+        Err(detail) => {
+            result.issue = Some(format!("Cannot read {}: {detail}", path.display()));
+            return result;
+        }
+    };
+    let mut problems = Vec::new();
+    match serde_json::from_slice(&bytes) {
+        Ok(serde_json::Value::Object(fields)) => {
+            for (key, value) in fields {
+                match (key.as_str(), value) {
+                    ("vault_root", serde_json::Value::String(root)) => {
+                        result.form.vault_root = Some(root).filter(|root| !root.is_empty());
+                    }
+                    ("use_yesterday_if_today_missing", serde_json::Value::Bool(enabled)) => {
+                        result.form.use_yesterday_if_today_missing = enabled;
+                    }
+                    ("vault_root" | "use_yesterday_if_today_missing", _) => {
+                        problems.push(format!("\"{key}\" has the wrong type"));
+                    }
+                    _ => problems.push(format!("unknown setting \"{key}\" will be removed")),
+                }
+            }
+            match &result.form.vault_root {
+                Some(root) => {
+                    if let Err(detail) = validate_root(Path::new(root)) {
+                        problems.push(detail);
+                    }
+                }
+                None => problems.push("vault_root is not set".into()),
+            }
+        }
+        Ok(_) => problems.push("the file is not a JSON object".into()),
+        Err(detail) => problems.push(format!("invalid JSON ({detail})")),
+    }
+    if !problems.is_empty() {
+        result.issue = Some(format!(
+            "{} has problems: {}. Choose new settings and save to replace it.",
+            path.display(),
+            problems.join("; ")
+        ));
+    }
+    result
+}
+
+/// Validates the dialog's settings, then creates or replaces the settings file.
+pub fn save_form(path: &Path, form: &SettingsForm, today: NaiveDate) -> Result<Settings, AppError> {
+    let root = form
+        .vault_root
+        .as_deref()
+        .filter(|root| !root.is_empty())
+        .ok_or_else(|| AppError::new("settings", "Choose a journal folder before saving."))?;
+    validate_root(Path::new(root)).map_err(|detail| {
+        AppError::new(
+            "settings",
+            format!("Cannot use {root} as the journal folder: {detail}"),
+        )
+    })?;
+    let config = Config {
+        vault_root: PathBuf::from(root),
+        use_yesterday_if_today_missing: form.use_yesterday_if_today_missing,
+    };
+    write(path, &config).map_err(|detail| {
+        AppError::new(
+            "settings",
+            format!("Could not save settings to {}: {detail}", path.display()),
+        )
+    })?;
+    Ok(config.settings(path, today))
 }
 
 impl Config {
@@ -75,9 +189,7 @@ impl Config {
 pub fn set_fallback(path: &Path, enabled: bool, today: NaiveDate) -> Result<Settings, AppError> {
     let mut config = load(path)?;
     config.use_yesterday_if_today_missing = enabled;
-    let mut bytes = serde_json::to_vec_pretty(&config).map_err(|detail| error(path, detail))?;
-    bytes.push(b'\n');
-    journal_core::atomic_write(path, &bytes).map_err(|detail| error(path, detail))?;
+    write(path, &config).map_err(|detail| error(path, detail))?;
     Ok(config.settings(path, today))
 }
 
@@ -196,5 +308,168 @@ mod tests {
         fs::set_permissions(&path, original).unwrap();
         assert!(result.is_err());
         assert!(load(&path).unwrap().use_yesterday_if_today_missing);
+    }
+
+    fn form(root: Option<&Path>, enabled: bool) -> SettingsForm {
+        SettingsForm {
+            vault_root: root.map(|root| root.display().to_string()),
+            use_yesterday_if_today_missing: enabled,
+        }
+    }
+
+    #[test]
+    fn read_form_reports_missing_and_valid_files() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("app").join("config.json");
+        let missing = read_form(&path);
+        assert!(!missing.exists);
+        assert_eq!(missing.form, SettingsForm::default());
+        assert_eq!(missing.issue, None);
+        assert_eq!(missing.config_path, path.display().to_string());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        write_config(&path, root.path());
+        set_fallback(&path, true, today()).unwrap();
+        let valid = read_form(&path);
+        assert!(valid.exists);
+        assert_eq!(valid.form, form(Some(root.path()), true));
+        assert_eq!(valid.issue, None);
+    }
+
+    #[test]
+    fn read_form_keeps_valid_fields_and_explains_the_rest() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.json");
+        let dir = root.path().display().to_string();
+        let missing = root.path().join("missing").display().to_string();
+        let cases = [
+            ("{", SettingsForm::default(), "invalid JSON"),
+            ("[]", SettingsForm::default(), "not a JSON object"),
+            ("{}", SettingsForm::default(), "vault_root is not set"),
+            (
+                r#"{"vault_root": ""}"#,
+                SettingsForm::default(),
+                "vault_root is not set",
+            ),
+            (
+                r#"{"vault_root": 42, "use_yesterday_if_today_missing": true}"#,
+                form(None, true),
+                "\"vault_root\" has the wrong type",
+            ),
+            (
+                &format!(r#"{{"vault_root": {dir:?}, "use_yesterday_if_today_missing": "yes"}}"#),
+                form(Some(root.path()), false),
+                "\"use_yesterday_if_today_missing\" has the wrong type",
+            ),
+            (
+                &format!(r#"{{"vault_root": {dir:?}, "typo": true}}"#),
+                form(Some(root.path()), false),
+                "unknown setting \"typo\" will be removed",
+            ),
+            (
+                r#"{"vault_root": "relative"}"#,
+                SettingsForm {
+                    vault_root: Some("relative".into()),
+                    use_yesterday_if_today_missing: false,
+                },
+                "absolute path",
+            ),
+            (
+                &format!(r#"{{"vault_root": {missing:?}}}"#),
+                SettingsForm {
+                    vault_root: Some(missing.clone()),
+                    use_yesterday_if_today_missing: false,
+                },
+                "cannot access vault_root",
+            ),
+        ];
+        for (input, expected, problem) in cases {
+            fs::write(&path, input).unwrap();
+            let result = read_form(&path);
+            assert!(result.exists, "{input}");
+            assert_eq!(result.form, expected, "{input}");
+            let issue = result.issue.unwrap();
+            assert!(issue.contains(problem), "{input}: {issue}");
+            assert!(issue.contains(&path.display().to_string()));
+            assert_eq!(fs::read_to_string(&path).unwrap(), input);
+        }
+    }
+
+    #[test]
+    fn save_form_creates_the_directory_and_file() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("app").join("config.json");
+        let settings = save_form(&path, &form(Some(root.path()), true), today()).unwrap();
+        assert!(settings.use_yesterday_if_today_missing);
+        assert_eq!(settings.config_path, path.display().to_string());
+        let config = load(&path).unwrap();
+        assert_eq!(config.vault_root, root.path());
+        assert!(config.use_yesterday_if_today_missing);
+        assert!(fs::read_to_string(&path).unwrap().ends_with("}\n"));
+    }
+
+    #[test]
+    fn save_form_replaces_invalid_files_and_reports_the_located_note() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.json");
+        fs::write(&path, r#"{"vault_root": "relative", "typo": 1}"#).unwrap();
+        let note = journal_core::daily_note_path(root.path(), today());
+        fs::create_dir_all(note.parent().unwrap()).unwrap();
+        fs::write(note, b"# Journal\n").unwrap();
+        let settings = save_form(&path, &form(Some(root.path()), false), today()).unwrap();
+        assert_eq!(
+            settings.note,
+            Some(NoteLabel {
+                name: "2026-03-01".into(),
+                is_yesterday: false,
+            })
+        );
+        assert_eq!(load(&path).unwrap().vault_root, root.path());
+        assert_eq!(read_form(&path).issue, None);
+    }
+
+    #[test]
+    fn save_form_validates_before_writing() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.json");
+        let original = r#"{"vault_root": "relative"}"#;
+        fs::write(&path, original).unwrap();
+        let file = path.display().to_string();
+        let missing = root.path().join("missing").display().to_string();
+        for (vault_root, detail) in [
+            (None, "Choose a journal folder"),
+            (Some(String::new()), "Choose a journal folder"),
+            (Some("relative".to_string()), "absolute path"),
+            (Some(missing), "cannot access vault_root"),
+            (Some(file), "existing directory"),
+        ] {
+            let form = SettingsForm {
+                vault_root,
+                use_yesterday_if_today_missing: true,
+            };
+            let error = save_form(&path, &form, today()).unwrap_err();
+            assert_eq!(error.code, "settings");
+            assert!(error.message.contains(detail), "{}", error.message);
+            assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn save_form_reports_write_failures_without_touching_the_draft() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.json");
+        write_config(&path, root.path());
+        crate::draft::save(&path, "keep me").unwrap();
+        let original = fs::metadata(&path).unwrap().permissions();
+        let mut readonly = original.clone();
+        readonly.set_readonly(true);
+        fs::set_permissions(&path, readonly).unwrap();
+        let result = save_form(&path, &form(Some(root.path()), true), today());
+        fs::set_permissions(&path, original).unwrap();
+        let error = result.unwrap_err();
+        assert_eq!(error.code, "settings");
+        assert!(error.message.contains("Could not save settings"));
+        assert!(!load(&path).unwrap().use_yesterday_if_today_missing);
+        save_form(&path, &form(Some(root.path()), true), today()).unwrap();
+        assert_eq!(crate::draft::load(&path).unwrap(), "keep me");
     }
 }

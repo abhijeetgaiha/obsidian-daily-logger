@@ -8,6 +8,9 @@
     "allow-load-draft",
     "allow-load-settings",
     "allow-set-fallback",
+    "allow-read-settings-form",
+    "allow-pick-vault-folder",
+    "allow-save-settings",
     "allow-submit-entry",
     "allow-request-exit"
   ]

@@ -8,6 +8,7 @@ use tauri::{Manager, RunEvent, WindowEvent};
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let path = app.path().app_config_dir()?.join("config.json");
             app.manage(AppState::new(path));
@@ -17,6 +18,9 @@ pub fn run() {
             commands::load_draft,
             commands::load_settings,
             commands::set_fallback,
+            commands::read_settings_form,
+            commands::pick_vault_folder,
+            commands::save_settings,
             commands::submit_entry,
             commands::request_exit,
         ])

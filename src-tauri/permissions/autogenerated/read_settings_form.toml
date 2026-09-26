@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-read-settings-form"
+description = "Enables the read_settings_form command without any pre-configured scope."
+commands.allow = ["read_settings_form"]
+
+[[permission]]
+identifier = "deny-read-settings-form"
+description = "Denies the read_settings_form command without any pre-configured scope."
+commands.deny = ["read_settings_form"]

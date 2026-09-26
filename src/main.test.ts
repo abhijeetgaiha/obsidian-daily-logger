@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { errorMessage, type JournalApi, type SavedEntry, type Settings } from "./api";
+import {
+  errorMessage, type FormResult, type JournalApi, type SavedEntry, type Settings,
+} from "./api";
 import { mountJournal } from "./ui";
 
 const initial: Settings = {
@@ -8,12 +10,24 @@ const initial: Settings = {
   note: { name: "2026-09-26", is_yesterday: false },
 };
 
+const validForm: FormResult = {
+  config_path: "/config/config.json",
+  exists: true,
+  form: { vault_root: "/vault", use_yesterday_if_today_missing: false },
+  issue: null,
+};
+
 function mockApi() {
   return {
     loadDraft: vi.fn<JournalApi["loadDraft"]>().mockResolvedValue(""),
     loadSettings: vi.fn<JournalApi["loadSettings"]>().mockResolvedValue(initial),
     setFallback: vi.fn<JournalApi["setFallback"]>().mockImplementation(async (enabled) => ({
       ...initial, use_yesterday_if_today_missing: enabled,
+    })),
+    readSettingsForm: vi.fn<JournalApi["readSettingsForm"]>().mockResolvedValue(validForm),
+    pickVaultFolder: vi.fn<JournalApi["pickVaultFolder"]>().mockResolvedValue("/picked"),
+    saveSettings: vi.fn<JournalApi["saveSettings"]>().mockImplementation(async (form) => ({
+      ...initial, use_yesterday_if_today_missing: form.use_yesterday_if_today_missing,
     })),
     submit: vi.fn<JournalApi["submit"]>().mockResolvedValue({ note_path: "today.md" }),
     exit: vi.fn<JournalApi["exit"]>().mockResolvedValue(undefined),
@@ -42,7 +56,24 @@ async function setup(api = mockApi()) {
     checkbox: root.querySelector<HTMLInputElement>("#fallback")!,
     message: root.querySelector<HTMLParagraphElement>("#message")!,
     noteName: root.querySelector<HTMLSpanElement>("#note-name")!,
+    gear: root.querySelector<HTMLButtonElement>("#settings")!,
+    journal: root.querySelector<HTMLDivElement>("#journal")!,
+    dialog: root.querySelector<HTMLDivElement>("#settings-dialog")!,
+    issue: root.querySelector<HTMLParagraphElement>("#settings-issue")!,
+    folder: root.querySelector<HTMLSpanElement>("#settings-folder")!,
+    choose: root.querySelector<HTMLButtonElement>("#settings-choose")!,
+    dialogFallback: root.querySelector<HTMLInputElement>("#settings-fallback")!,
+    dialogMessage: root.querySelector<HTMLParagraphElement>("#settings-message")!,
+    saveButton: root.querySelector<HTMLButtonElement>("#settings-save")!,
+    cancelButton: root.querySelector<HTMLButtonElement>("#settings-cancel")!,
   };
+}
+
+async function openSettings(api = mockApi()) {
+  const view = await setup(api);
+  view.gear.click();
+  await flush();
+  return view;
 }
 
 function key(target: HTMLElement, key: string, options: KeyboardEventInit = {}) {
@@ -324,6 +355,200 @@ describe("minimal journal window", () => {
     const { noteName } = await setup(api);
     expect(noteName.textContent).toBe("<b>note</b>");
     expect(noteName.children).toHaveLength(0);
+  });
+
+  it("places the settings gear right after the note name", async () => {
+    const { gear, noteName, dialog } = await setup();
+    expect(noteName.nextElementSibling).toBe(gear);
+    expect(gear.getAttribute("aria-label")).toBe("Settings");
+    expect(gear.disabled).toBe(false);
+    expect(dialog.hidden).toBe(true);
+  });
+
+  it("opens the dialog with the existing settings loaded", async () => {
+    const api = mockApi();
+    api.readSettingsForm.mockResolvedValue({
+      ...validForm, form: { vault_root: "/vault", use_yesterday_if_today_missing: true },
+    });
+    const { dialog, folder, dialogFallback, issue, saveButton, journal, entry, choose } =
+      await openSettings(api);
+    expect(api.readSettingsForm).toHaveBeenCalledOnce();
+    expect(dialog.hidden).toBe(false);
+    expect(folder.textContent).toBe("/vault");
+    expect(dialogFallback.checked).toBe(true);
+    expect(issue.textContent).toBe("");
+    expect(saveButton.disabled).toBe(false);
+    expect(journal.hasAttribute("inert")).toBe(true);
+    expect(entry.readOnly).toBe(true);
+    expect(document.activeElement).toBe(choose);
+  });
+
+  it("opens an empty form when no settings file exists and creates it on save", async () => {
+    const api = mockApi();
+    api.readSettingsForm.mockResolvedValue({
+      config_path: "/config/config.json",
+      exists: false,
+      form: { vault_root: null, use_yesterday_if_today_missing: false },
+      issue: null,
+    });
+    const { folder, issue, saveButton, choose, dialogFallback, dialog, checkbox, message } =
+      await openSettings(api);
+    expect(folder.textContent).toBe("Not set");
+    expect(issue.textContent).toContain("Saving creates /config/config.json");
+    expect(issue.className).toBe("");
+    expect(saveButton.disabled).toBe(true);
+    choose.click();
+    await flush();
+    expect(api.pickVaultFolder).toHaveBeenCalledExactlyOnceWith(null);
+    expect(folder.textContent).toBe("/picked");
+    dialogFallback.checked = true;
+    dialogFallback.dispatchEvent(new Event("change"));
+    saveButton.click();
+    await flush();
+    expect(api.saveSettings).toHaveBeenCalledExactlyOnceWith({
+      vault_root: "/picked", use_yesterday_if_today_missing: true,
+    });
+    expect(dialog.hidden).toBe(true);
+    expect(checkbox.checked).toBe(true);
+    expect(checkbox.disabled).toBe(false);
+    expect(message.textContent).toBe("Settings saved.");
+  });
+
+  it("shows partially valid settings with the problem and allows replacing them", async () => {
+    const api = mockApi();
+    api.readSettingsForm.mockResolvedValue({
+      ...validForm,
+      form: { vault_root: "/gone", use_yesterday_if_today_missing: false },
+      issue: "<b>vault_root must be an existing directory</b>",
+    });
+    const { folder, issue, saveButton, choose } = await openSettings(api);
+    expect(folder.textContent).toBe("/gone");
+    expect(issue.textContent).toBe("<b>vault_root must be an existing directory</b>");
+    expect(issue.children).toHaveLength(0);
+    expect(issue.className).toBe("error");
+    choose.click();
+    await flush();
+    expect(api.pickVaultFolder).toHaveBeenCalledWith("/gone");
+    saveButton.click();
+    await flush();
+    expect(api.saveSettings).toHaveBeenCalledWith({
+      vault_root: "/picked", use_yesterday_if_today_missing: false,
+    });
+  });
+
+  it("keeps the current folder when the picker is cancelled or fails", async () => {
+    const api = mockApi();
+    api.pickVaultFolder.mockResolvedValue(null);
+    const { folder, choose, dialogMessage } = await openSettings(api);
+    choose.click();
+    await flush();
+    expect(folder.textContent).toBe("/vault");
+    api.pickVaultFolder.mockRejectedValue(new Error("Picker failed"));
+    choose.click();
+    await flush();
+    expect(folder.textContent).toBe("/vault");
+    expect(dialogMessage.textContent).toBe("Picker failed");
+  });
+
+  it("refreshes the note name after saving settings", async () => {
+    const api = mockApi();
+    api.saveSettings.mockResolvedValue({
+      ...initial, note: { name: "2026-09-25", is_yesterday: true },
+    });
+    const { saveButton, noteName, entry } = await openSettings(api);
+    saveButton.click();
+    await flush();
+    expect(noteName.textContent).toBe("2026-09-25");
+    expect(noteName.classList.contains("inactive")).toBe(true);
+    expect(document.activeElement).toBe(entry);
+  });
+
+  it("keeps the dialog open and the draft intact when saving settings fails", async () => {
+    const api = mockApi();
+    api.loadDraft.mockResolvedValue("my draft");
+    api.saveSettings.mockRejectedValue({ code: "settings", message: "Cannot save" });
+    const { saveButton, dialog, dialogMessage, entry } = await openSettings(api);
+    saveButton.click();
+    await flush();
+    expect(dialog.hidden).toBe(false);
+    expect(dialogMessage.textContent).toBe("Cannot save");
+    expect(dialogMessage.className).toBe("error");
+    expect(saveButton.disabled).toBe(false);
+    expect(entry.value).toBe("my draft");
+  });
+
+  it("Escape and Cancel close the dialog without exiting or saving", async () => {
+    const api = mockApi();
+    const { dialog, entry, cancelButton, gear, journal } = await openSettings(api);
+    expect(key(dialog, "Escape").defaultPrevented).toBe(true);
+    await flush();
+    expect(dialog.hidden).toBe(true);
+    expect(journal.hasAttribute("inert")).toBe(false);
+    expect(document.activeElement).toBe(entry);
+    expect(api.exit).not.toHaveBeenCalled();
+    gear.click();
+    await flush();
+    cancelButton.click();
+    await flush();
+    expect(dialog.hidden).toBe(true);
+    expect(api.saveSettings).not.toHaveBeenCalled();
+    expect(api.exit).not.toHaveBeenCalled();
+    key(entry, "Escape");
+    await flush();
+    expect(api.exit).toHaveBeenCalledOnce();
+  });
+
+  it("does not submit the journal entry on Enter while the dialog is open", async () => {
+    const api = mockApi();
+    const { entry, dialog } = await openSettings(api);
+    entry.value = "draft";
+    key(entry, "Enter");
+    key(dialog, "Enter");
+    await flush();
+    expect(api.submit).not.toHaveBeenCalled();
+    expect(dialog.hidden).toBe(false);
+  });
+
+  it("ignores Escape while a settings operation is pending", async () => {
+    const api = mockApi();
+    let resolve!: (path: string | null) => void;
+    api.pickVaultFolder.mockReturnValue(new Promise((done) => { resolve = done; }));
+    const { choose, dialog, saveButton, cancelButton } = await openSettings(api);
+    choose.click();
+    await flush();
+    expect(saveButton.disabled).toBe(true);
+    expect(cancelButton.disabled).toBe(true);
+    key(dialog, "Escape");
+    expect(dialog.hidden).toBe(false);
+    resolve("/new");
+    await flush();
+    expect(cancelButton.disabled).toBe(false);
+  });
+
+  it("shows an error instead of the dialog when settings cannot be read", async () => {
+    const api = mockApi();
+    api.readSettingsForm.mockRejectedValue(new Error("Busy"));
+    const { dialog, message, entry } = await openSettings(api);
+    expect(dialog.hidden).toBe(true);
+    expect(message.textContent).toBe("Busy");
+    expect(document.activeElement).toBe(entry);
+  });
+
+  it("disables the gear during a save and after an entry is logged", async () => {
+    const api = mockApi();
+    api.exit.mockRejectedValue(new Error("Cannot exit"));
+    let resolve!: (result: SavedEntry) => void;
+    api.submit.mockReturnValue(new Promise((done) => { resolve = done; }));
+    const { entry, gear } = await setup(api);
+    key(entry, "Enter");
+    await flush();
+    expect(gear.disabled).toBe(true);
+    resolve({ note_path: "today.md" });
+    await flush();
+    expect(gear.disabled).toBe(true);
+    gear.click();
+    await flush();
+    expect(api.readSettingsForm).not.toHaveBeenCalled();
   });
 
   it("formats unknown errors explicitly", () => {

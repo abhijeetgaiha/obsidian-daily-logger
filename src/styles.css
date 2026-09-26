@@ -19,6 +19,13 @@ body { margin: 0; }
   border: 1px solid #b8b8b8;
 }
 
+#journal {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .drag-area {
   flex: 0 0 15px;
   cursor: move;
@@ -39,7 +46,8 @@ textarea {
 }
 
 textarea:focus-visible { outline: 1px solid #70899e; }
-input:focus-visible { outline: 2px solid #537a99; }
+input:focus-visible,
+button:focus-visible { outline: 2px solid #537a99; }
 
 .status-row {
   display: flex;
@@ -57,6 +65,32 @@ input:focus-visible { outline: 2px solid #537a99; }
   gap: 5px;
   user-select: none;
 }
+
+.note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+#settings {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  color: inherit;
+  background: transparent;
+  opacity: 0.7;
+  cursor: pointer;
+}
+
+#settings:hover:not(:disabled) { opacity: 1; background: rgb(127 127 127 / 0.15); }
+#settings:disabled { opacity: 0.3; cursor: default; }
 
 #note-name {
   min-width: 0;
@@ -80,10 +114,80 @@ input { accent-color: #537a99; }
 }
 
 #message:empty { display: none; }
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgb(0 0 0 / 0.25);
+}
+
+.overlay[hidden] { display: none; }
+
+.dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-height: 100%;
+  overflow: auto;
+  padding: 12px 14px;
+  border: 1px solid #b8b8b8;
+  border-radius: 6px;
+  font-size: 12px;
+  background: #faf9f6;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.2);
+}
+
+.dialog h2 { margin: 0; font-size: 14px; font-weight: 600; }
+
+.dialog p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.dialog p:empty { display: none; }
+
+#settings-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.setting-label { display: block; margin-bottom: 3px; font-weight: 600; }
+
+.folder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#settings-folder {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#settings-folder.unset { opacity: 0.6; }
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.dialog button { font: inherit; padding: 3px 12px; }
 .error { color: #a22727; }
 
 @media (prefers-color-scheme: dark) {
   :root { color: #efefec; background: #242523; }
   #app { border-color: #626460; }
+  .dialog { border-color: #626460; background: #2d2e2c; }
   .error { color: #ffaaaa; }
 }

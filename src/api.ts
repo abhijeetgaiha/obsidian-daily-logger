@@ -12,6 +12,18 @@ export interface Settings {
   note: NoteLabel | null;
 }
 
+export interface SettingsForm {
+  vault_root: string | null;
+  use_yesterday_if_today_missing: boolean;
+}
+
+export interface FormResult {
+  config_path: string;
+  exists: boolean;
+  form: SettingsForm;
+  issue: string | null;
+}
+
 export interface SavedEntry {
   note_path: string;
 }
@@ -20,6 +32,9 @@ export interface JournalApi {
   loadDraft(): Promise<string>;
   loadSettings(): Promise<Settings>;
   setFallback(enabled: boolean): Promise<Settings>;
+  readSettingsForm(): Promise<FormResult>;
+  pickVaultFolder(current: string | null): Promise<string | null>;
+  saveSettings(form: SettingsForm): Promise<Settings>;
   submit(text: string): Promise<SavedEntry>;
   exit(text?: string): Promise<void>;
   startDragging(): Promise<void>;
@@ -29,6 +44,9 @@ export const api: JournalApi = {
   loadDraft: () => invoke<string>("load_draft"),
   loadSettings: () => invoke<Settings>("load_settings"),
   setFallback: (enabled) => invoke<Settings>("set_fallback", { enabled }),
+  readSettingsForm: () => invoke<FormResult>("read_settings_form"),
+  pickVaultFolder: (current) => invoke<string | null>("pick_vault_folder", { current }),
+  saveSettings: (form) => invoke<Settings>("save_settings", { form }),
   submit: (text) => invoke<SavedEntry>("submit_entry", { text }),
   exit: (text) => invoke<void>("request_exit", { text: text ?? null }),
   startDragging: () => getCurrentWindow().startDragging(),

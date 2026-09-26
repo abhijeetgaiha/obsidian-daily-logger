@@ -1,23 +1,40 @@
 import { errorMessage, type JournalApi, type NoteLabel, type Settings } from "./api";
+import { mountSettingsDialog } from "./settings";
+
+const gearIcon = `
+  <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false">
+    <circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="2.6"
+      stroke-dasharray="2.2 2.2" />
+    <circle cx="8" cy="8" r="3.5" fill="none" stroke="currentColor" stroke-width="1.8" />
+  </svg>
+`;
 
 export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   root.innerHTML = `
-    <div class="drag-area" aria-hidden="true"></div>
-    <textarea id="entry" aria-label="Journal entry"
-      placeholder="Write a journal entry..." spellcheck="true"
-      aria-describedby="message"></textarea>
-    <div class="status-row">
-      <label class="fallback">
-        <input id="fallback" type="checkbox" />
-        Use yesterday if today is missing
-      </label>
-      <span id="note-name"></span>
+    <div id="journal">
+      <div class="drag-area" aria-hidden="true"></div>
+      <textarea id="entry" aria-label="Journal entry"
+        placeholder="Write a journal entry..." spellcheck="true"
+        aria-describedby="message"></textarea>
+      <div class="status-row">
+        <label class="fallback">
+          <input id="fallback" type="checkbox" />
+          Use yesterday if today is missing
+        </label>
+        <div class="note">
+          <span id="note-name"></span>
+          <button id="settings" type="button" aria-label="Settings" title="Settings"
+            aria-haspopup="dialog">${gearIcon}</button>
+        </div>
+      </div>
+      <p id="message" role="status" aria-live="polite"></p>
     </div>
-    <p id="message" role="status" aria-live="polite"></p>
   `;
+  const journal = root.querySelector<HTMLDivElement>("#journal")!;
   const entry = root.querySelector<HTMLTextAreaElement>("#entry")!;
   const checkbox = root.querySelector<HTMLInputElement>("#fallback")!;
   const noteName = root.querySelector<HTMLSpanElement>("#note-name")!;
+  const gear = root.querySelector<HTMLButtonElement>("#settings")!;
   const message = root.querySelector<HTMLParagraphElement>("#message")!;
   const dragArea = root.querySelector<HTMLDivElement>(".drag-area")!;
   let settings: Settings | undefined;
@@ -25,10 +42,25 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   let busy = true;
   let draftLoaded = false;
   let savedPath: string | undefined;
+  const dialog = mountSettingsDialog(root, api, {
+    onSaved(saved) {
+      settings = saved;
+      note = saved.note ?? undefined;
+      message.textContent = "Settings saved.";
+      message.className = "";
+    },
+    onClose() {
+      render();
+      entry.focus();
+    },
+  });
 
   function render() {
-    entry.readOnly = busy || !draftLoaded || savedPath !== undefined;
-    checkbox.disabled = busy || settings === undefined || savedPath !== undefined;
+    const blocked = busy || dialog.isOpen;
+    entry.readOnly = blocked || !draftLoaded || savedPath !== undefined;
+    checkbox.disabled = blocked || settings === undefined || savedPath !== undefined;
+    gear.disabled = blocked || savedPath !== undefined;
+    journal.toggleAttribute("inert", dialog.isOpen);
     checkbox.checked = settings?.use_yesterday_if_today_missing ?? false;
     const inactive = note?.is_yesterday === true && !checkbox.checked;
     noteName.textContent = note?.name ?? "No File Selected";
@@ -76,7 +108,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   }
 
   async function save() {
-    if (busy || savedPath !== undefined) return;
+    if (busy || dialog.isOpen || savedPath !== undefined) return;
     busy = true;
     message.textContent = "Saving...";
     message.className = "";
@@ -105,7 +137,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   }
 
   async function changeFallback() {
-    if (busy || savedPath !== undefined) return;
+    if (busy || dialog.isOpen || savedPath !== undefined) return;
     const enabled = checkbox.checked;
     busy = true;
     message.textContent = "";
@@ -122,8 +154,30 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     }
   }
 
+  async function openSettings() {
+    if (busy || dialog.isOpen || savedPath !== undefined) return;
+    busy = true;
+    render();
+    try {
+      dialog.show(await api.readSettingsForm());
+    } catch (error) {
+      showError(error);
+    } finally {
+      busy = false;
+      render();
+      if (!dialog.isOpen) entry.focus();
+    }
+  }
+
   function onKeyDown(event: KeyboardEvent) {
     if (event.isComposing || event.keyCode === 229) return;
+    if (dialog.isOpen) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        dialog.cancel();
+      }
+      return;
+    }
     if (event.key === "Escape") {
       event.preventDefault();
       if (!busy && !event.repeat) void close();
@@ -143,6 +197,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   }
 
   checkbox.addEventListener("change", changeFallback);
+  gear.addEventListener("click", openSettings);
   dragArea.addEventListener("pointerdown", startDragging);
   window.addEventListener("keydown", onKeyDown);
   render();
@@ -169,6 +224,8 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   return () => {
     window.removeEventListener("keydown", onKeyDown);
     checkbox.removeEventListener("change", changeFallback);
+    gear.removeEventListener("click", openSettings);
+    dialog.destroy();
     dragArea.removeEventListener("pointerdown", startDragging);
   };
 }

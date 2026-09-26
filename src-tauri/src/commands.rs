@@ -1,15 +1,16 @@
 use crate::{
-    config::{self, Settings},
+    config::{self, FormResult, Settings, SettingsForm},
     draft,
     error::AppError,
 };
-use chrono::{DateTime, Local, TimeZone};
+use chrono::{DateTime, Local, NaiveDate, TimeZone};
 use serde::Serialize;
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard, TryLockError},
 };
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, State, WebviewWindow};
+use tauri_plugin_dialog::DialogExt;
 
 #[derive(Default)]
 pub struct Session {
@@ -80,6 +81,16 @@ impl Session {
         }
     }
 
+    fn save_settings(
+        &self,
+        path: &Path,
+        form: &SettingsForm,
+        today: NaiveDate,
+    ) -> Result<Settings, AppError> {
+        self.check_writable()?;
+        config::save_form(path, form, today)
+    }
+
     fn save<Tz: TimeZone>(
         &mut self,
         path: &Path,
@@ -113,12 +124,14 @@ async fn operate<T: Send + 'static>(
         operation(&mut session, &path)
     })
     .await
-    .map_err(|_| {
-        AppError::new(
-            "worker_failed",
-            "The operation failed unexpectedly. Check the note before retrying.",
-        )
-    })?
+    .map_err(|_| worker_failed())?
+}
+
+fn worker_failed() -> AppError {
+    AppError::new(
+        "worker_failed",
+        "The operation failed unexpectedly. Check the note before retrying.",
+    )
 }
 
 #[tauri::command]
@@ -141,6 +154,60 @@ pub async fn set_fallback(state: State<'_, AppState>, enabled: bool) -> Result<S
     operate(&state, move |session, path| {
         session.check_writable()?;
         config::set_fallback(path, enabled, today)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn read_settings_form(state: State<'_, AppState>) -> Result<FormResult, AppError> {
+    operate(&state, |_, path| Ok(config::read_form(path))).await
+}
+
+#[tauri::command]
+pub async fn pick_vault_folder(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    current: Option<String>,
+) -> Result<Option<String>, AppError> {
+    // The lock is released before the picker opens so it is not held while the user browses.
+    lock_session(&state.session)?.check_writable()?;
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        let mut dialog = window
+            .dialog()
+            .file()
+            .set_parent(&window)
+            .set_title("Choose journal folder");
+        if let Some(directory) = current.map(PathBuf::from).filter(|path| path.is_dir()) {
+            dialog = dialog.set_directory(directory);
+        }
+        dialog.blocking_pick_folder()
+    })
+    .await
+    .map_err(|_| worker_failed())?;
+    let Some(picked) = picked else {
+        return Ok(None);
+    };
+    picked
+        .into_path()
+        .ok()
+        .and_then(|path| path.into_os_string().into_string().ok())
+        .map(Some)
+        .ok_or_else(|| {
+            AppError::new(
+                "settings",
+                "The chosen folder's path cannot be stored in settings. Choose another folder.",
+            )
+        })
+}
+
+#[tauri::command]
+pub async fn save_settings(
+    state: State<'_, AppState>,
+    form: SettingsForm,
+) -> Result<Settings, AppError> {
+    let today = Local::now().date_naive();
+    operate(&state, move |session, path| {
+        session.save_settings(path, &form, today)
     })
     .await
 }
@@ -260,5 +327,31 @@ mod tests {
         fs::remove_dir(config.with_file_name("draft.txt")).unwrap();
         session.prepare_exit(&config, None).unwrap();
         assert!(session.exiting);
+    }
+
+    #[test]
+    fn settings_cannot_be_saved_after_an_entry_is_logged_or_while_exiting() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.json");
+        let today = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
+        let form = SettingsForm {
+            vault_root: Some(root.path().display().to_string()),
+            use_yesterday_if_today_missing: false,
+        };
+        let mut session = Session {
+            saved: true,
+            ..Default::default()
+        };
+        let error = session.save_settings(&path, &form, today).unwrap_err();
+        assert_eq!(error.code, "already_saved");
+        assert!(!path.exists());
+        session.saved = false;
+        session.exiting = true;
+        let error = session.save_settings(&path, &form, today).unwrap_err();
+        assert_eq!(error.code, "exiting");
+        assert!(!path.exists());
+        session.exiting = false;
+        session.save_settings(&path, &form, today).unwrap();
+        assert_eq!(config::load(&path).unwrap().vault_root, root.path());
     }
 }
