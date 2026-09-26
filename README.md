@@ -181,8 +181,11 @@ permissions. The account needs an available private-repository Actions allowance
 Artifacts are personal-use builds without trusted Windows signing or Apple
 Developer ID signing/notarization. SmartScreen or Gatekeeper may warn or block
 opening them. Use the OS's per-app approval flow only after verifying the source
-and download; do not disable system-wide protection. Apple Silicon packaging may
-use ad-hoc signing, which is not notarization.
+and download; do not disable system-wide protection. The macOS bundle is ad-hoc
+signed (`signingIdentity: "-"`), which is not notarization: after the first
+blocked launch, approve it in System Settings > Privacy & Security > Open Anyway.
+If macOS says the app "is damaged", the bundle signature is missing or broken;
+`codesign --verify --deep --strict` on the `.app` must pass.
 
 Native builds and unit tests do not establish graphical behavior on a Mac.
 Manually check focus, keys, sticky preferences, errors, dragging, and note output

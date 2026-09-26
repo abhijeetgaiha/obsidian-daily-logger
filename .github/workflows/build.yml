@@ -61,6 +61,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           test "$(lipo -archs 'target/aarch64-apple-darwin/release/bundle/macos/Journal Logger.app/Contents/MacOS/journal-logger')" = arm64
+          codesign --verify --deep --strict --verbose=2 'target/aarch64-apple-darwin/release/bundle/macos/Journal Logger.app'
           test -n "$(find target/aarch64-apple-darwin/release/bundle/dmg -name '*.dmg' -print -quit)"
           tar -czf target/aarch64-apple-darwin/release/Journal-Logger.app.tar.gz -C target/aarch64-apple-darwin/release/bundle/macos 'Journal Logger.app'
       - name: Upload Windows installer
