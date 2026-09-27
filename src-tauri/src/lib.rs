@@ -19,6 +19,7 @@ pub fn run() {
             commands::save_draft,
             commands::load_settings,
             commands::set_fallback,
+            commands::set_entry_format,
             commands::read_settings_form,
             commands::list_headings,
             commands::pick_vault_folder,

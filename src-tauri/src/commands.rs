@@ -1,5 +1,5 @@
 use crate::{
-    config::{self, FormResult, HeadingList, Settings, SettingsForm},
+    config::{self, EntryFormat, FormResult, HeadingList, Settings, SettingsForm},
     draft,
     error::AppError,
 };
@@ -119,6 +119,7 @@ impl Session {
             moment,
             config.use_yesterday_if_today_missing,
             &config.placement(),
+            config.entry_format.into(),
             text,
         )?;
         self.saved = true;
@@ -175,6 +176,19 @@ pub async fn set_fallback(state: State<'_, AppState>, enabled: bool) -> Result<S
     operate(&state, move |session, path| {
         session.check_writable()?;
         config::set_fallback(path, enabled, today)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_entry_format(
+    state: State<'_, AppState>,
+    format: EntryFormat,
+) -> Result<Settings, AppError> {
+    let today = Local::now().date_naive();
+    operate(&state, move |session, path| {
+        session.check_writable()?;
+        config::set_entry_format(path, format, today)
     })
     .await
 }
@@ -449,6 +463,31 @@ mod tests {
         assert_eq!(
             fs::read_to_string(note).unwrap(),
             "# Day\n## Log\nold\n\n[1:05pm] entry\n\n### Later\n"
+        );
+    }
+
+    #[test]
+    fn save_uses_the_configured_block_format() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.json");
+        let moment = FixedOffset::east_opt(0)
+            .unwrap()
+            .with_ymd_and_hms(2026, 9, 22, 13, 5, 0)
+            .unwrap();
+        let note = journal_core::daily_note_path(root.path(), moment.date_naive());
+        fs::create_dir_all(note.parent().unwrap()).unwrap();
+        fs::write(&note, b"# Log\n").unwrap();
+        let form = SettingsForm {
+            vault_root: Some(root.path().display().to_string()),
+            heading: "# Log".into(),
+            entry_format: EntryFormat::Block,
+            ..Default::default()
+        };
+        config::save_form(&path, &form, moment.date_naive()).unwrap();
+        Session::default().save(&path, &moment, " entry ").unwrap();
+        assert_eq!(
+            fs::read_to_string(note).unwrap(),
+            "# Log\n\n**1:05pm**\nentry\n\n---\n"
         );
     }
 

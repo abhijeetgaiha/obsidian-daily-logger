@@ -25,6 +25,23 @@ impl From<DuplicateHeading> for journal_core::DuplicateHeading {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EntryFormat {
+    #[default]
+    Inline,
+    Block,
+}
+
+impl From<EntryFormat> for journal_core::EntryFormat {
+    fn from(value: EntryFormat) -> Self {
+        match value {
+            EntryFormat::Inline => Self::Inline,
+            EntryFormat::Block => Self::Block,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -34,6 +51,8 @@ pub struct Config {
     pub heading: String,
     #[serde(default)]
     pub duplicate_heading: DuplicateHeading,
+    #[serde(default)]
+    pub entry_format: EntryFormat,
     #[serde(default)]
     pub use_yesterday_if_today_missing: bool,
 }
@@ -48,6 +67,7 @@ pub struct NoteLabel {
 pub struct Settings {
     pub config_path: String,
     pub use_yesterday_if_today_missing: bool,
+    pub entry_format: EntryFormat,
     pub note: Option<NoteLabel>,
 }
 
@@ -57,6 +77,7 @@ pub struct SettingsForm {
     pub vault_root: Option<String>,
     pub heading: String,
     pub duplicate_heading: DuplicateHeading,
+    pub entry_format: EntryFormat,
     pub use_yesterday_if_today_missing: bool,
 }
 
@@ -82,7 +103,8 @@ fn error(path: &Path, detail: impl std::fmt::Display) -> AppError {
         format!(
             "Cannot use {}: {detail}\nUse the Settings gear to fix it, or edit this JSON file: \
              \"vault_root\" must be an absolute folder, \"heading\" empty or a Markdown \
-             heading such as \"# Journal\", and \"use_yesterday_if_today_missing\" a boolean. \
+             heading such as \"# Journal\", \"entry_format\" \"inline\" or \"block\", and \
+             \"use_yesterday_if_today_missing\" a boolean. \
              Press Enter after correcting it; your draft will be retained.",
             path.display()
         ),
@@ -166,11 +188,19 @@ pub fn read_form(path: &Path) -> FormResult {
                             ),
                         }
                     }
+                    ("entry_format", value @ serde_json::Value::String(_)) => {
+                        match serde_json::from_value(value) {
+                            Ok(format) => result.form.entry_format = format,
+                            Err(_) => problems
+                                .push("\"entry_format\" must be \"inline\" or \"block\"".into()),
+                        }
+                    }
                     (
                         "vault_root"
                         | "use_yesterday_if_today_missing"
                         | "heading"
-                        | "duplicate_heading",
+                        | "duplicate_heading"
+                        | "entry_format",
                         _,
                     ) => {
                         problems.push(format!("\"{key}\" has the wrong type"));
@@ -259,6 +289,7 @@ pub fn save_form(path: &Path, form: &SettingsForm, today: NaiveDate) -> Result<S
         vault_root: PathBuf::from(root),
         heading,
         duplicate_heading: form.duplicate_heading,
+        entry_format: form.entry_format,
         use_yesterday_if_today_missing: form.use_yesterday_if_today_missing,
     };
     write(path, &config).map_err(|detail| {
@@ -275,6 +306,7 @@ impl Config {
         Settings {
             config_path: path.display().to_string(),
             use_yesterday_if_today_missing: self.use_yesterday_if_today_missing,
+            entry_format: self.entry_format,
             note: self.note_label(today),
         }
     }
@@ -299,6 +331,17 @@ impl Config {
 pub fn set_fallback(path: &Path, enabled: bool, today: NaiveDate) -> Result<Settings, AppError> {
     let mut config = load(path)?;
     config.use_yesterday_if_today_missing = enabled;
+    write(path, &config).map_err(|detail| error(path, detail))?;
+    Ok(config.settings(path, today))
+}
+
+pub fn set_entry_format(
+    path: &Path,
+    format: EntryFormat,
+    today: NaiveDate,
+) -> Result<Settings, AppError> {
+    let mut config = load(path)?;
+    config.entry_format = format;
     write(path, &config).map_err(|detail| error(path, detail))?;
     Ok(config.settings(path, today))
 }
@@ -705,6 +748,42 @@ mod tests {
         form.heading = "   ".into();
         save_form(&path, &form, today()).unwrap();
         assert_eq!(load(&path).unwrap().placement().heading, None);
+    }
+
+    #[test]
+    fn entry_format_defaults_to_inline_round_trips_and_rejects_bad_values() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.json");
+        write_config(&path, root.path());
+        assert_eq!(load(&path).unwrap().entry_format, EntryFormat::Inline);
+        let settings = set_entry_format(&path, EntryFormat::Block, today()).unwrap();
+        assert_eq!(settings.entry_format, EntryFormat::Block);
+        let config = load(&path).unwrap();
+        assert_eq!(config.entry_format, EntryFormat::Block);
+        assert_eq!(config.vault_root, root.path());
+        set_fallback(&path, true, today()).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["entry_format"], "block");
+        assert_eq!(read_form(&path).form.entry_format, EntryFormat::Block);
+
+        let mut form = form(Some(root.path()), false);
+        form.entry_format = EntryFormat::Inline;
+        let settings = save_form(&path, &form, today()).unwrap();
+        assert_eq!(settings.entry_format, EntryFormat::Inline);
+        assert_eq!(load(&path).unwrap().entry_format, EntryFormat::Inline);
+
+        for value in [serde_json::json!("fancy"), serde_json::json!(1)] {
+            let invalid = serde_json::json!({ "vault_root": root.path(), "entry_format": value });
+            write_json(&path, invalid);
+            assert!(load(&path).is_err(), "{value}");
+            let before = fs::read(&path).unwrap();
+            assert!(set_entry_format(&path, EntryFormat::Block, today()).is_err());
+            assert_eq!(fs::read(&path).unwrap(), before);
+            let result = read_form(&path);
+            assert_eq!(result.form.entry_format, EntryFormat::Inline);
+            let issue = result.issue.unwrap();
+            assert!(issue.contains("\"entry_format\""), "{issue}");
+        }
     }
 
     #[test]

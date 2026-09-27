@@ -1,8 +1,10 @@
 use chrono::{FixedOffset, NaiveDate, TimeZone};
 use journal_core::{
-    append_entry, atomic_write, build_updated_note, daily_note_path, format_timestamp,
-    list_headings, locate_daily_note, select_daily_note, trim_entry, validate_heading,
-    DuplicateHeading, LocatedNote, LogError, Placement,
+    append_entry, atomic_write, build_updated_note, daily_note_path, format_clock_time,
+    format_timestamp, list_headings, locate_daily_note, render_entry, select_daily_note,
+    trim_entry, validate_heading, DuplicateHeading,
+    EntryFormat::{self, Block, Inline},
+    LocatedNote, LogError, Placement,
 };
 use std::{fs, path::Path};
 
@@ -320,7 +322,15 @@ fn append_is_exact_and_uses_invocation_date_even_near_midnight() {
     let zone = FixedOffset::east_opt(5 * 3600 + 30 * 60).unwrap();
     let moment = zone.with_ymd_and_hms(2026, 1, 1, 0, 5, 0).unwrap();
     let previous = note(root.path(), date(2025, 12, 31), b"# Journal\n");
-    let result = append_entry(root.path(), &moment, true, &journal(), "  hello\nworld  ").unwrap();
+    let result = append_entry(
+        root.path(),
+        &moment,
+        true,
+        &journal(),
+        Inline,
+        "  hello\nworld  ",
+    )
+    .unwrap();
     assert_eq!(result, previous);
     assert_eq!(
         fs::read(previous).unwrap(),
@@ -339,18 +349,18 @@ fn invalid_entries_and_notes_do_not_write() {
     let path = note(root.path(), moment.date_naive(), b"no journal");
     for text in ["", " \t\n", "\u{1f}"] {
         assert!(matches!(
-            append_entry(root.path(), &moment, false, &journal(), text),
+            append_entry(root.path(), &moment, false, &journal(), Inline, text),
             Err(LogError::EmptyEntry)
         ));
     }
     assert!(matches!(
-        append_entry(root.path(), &moment, false, &journal(), "entry"),
+        append_entry(root.path(), &moment, false, &journal(), Inline, "entry"),
         Err(LogError::HeadingMissing { .. })
     ));
     assert_eq!(fs::read(&path).unwrap(), b"no journal");
     fs::write(&path, b"# Journal\n\xff").unwrap();
     assert!(matches!(
-        append_entry(root.path(), &moment, false, &journal(), "entry"),
+        append_entry(root.path(), &moment, false, &journal(), Inline, "entry"),
         Err(LogError::Encoding(_))
     ));
     assert_eq!(fs::read(&path).unwrap(), b"# Journal\n\xff");
@@ -425,4 +435,59 @@ fn listed_headings_are_distinct_ordered_and_insertable() {
     }
     assert!(list_headings("").is_empty());
     assert!(list_headings("no headings\n#tag").is_empty());
+}
+
+fn block_at(hour: u32, minute: u32) -> chrono::DateTime<FixedOffset> {
+    FixedOffset::east_opt(0)
+        .unwrap()
+        .with_ymd_and_hms(2026, 9, 27, hour, minute, 0)
+        .unwrap()
+}
+
+#[test]
+fn entry_formats_render_inline_and_block_layouts() {
+    let moment = block_at(13, 5);
+    assert_eq!(format_clock_time(&moment), "1:05pm");
+    assert_eq!(format_clock_time(&block_at(0, 0)), "12:00am");
+    assert_eq!(EntryFormat::default(), Inline);
+    assert_eq!(render_entry(Inline, &moment, "text", "\n"), "[1:05pm] text");
+    assert_eq!(
+        render_entry(Block, &moment, "a\nb", "\n"),
+        "**1:05pm**\na\nb\n\n---"
+    );
+    assert_eq!(
+        render_entry(Block, &moment, "a\nb", "\r\n"),
+        "**1:05pm**\r\na\nb\r\n\r\n---"
+    );
+}
+
+#[test]
+fn block_entries_are_placed_like_inline_entries() {
+    let root = tempfile::tempdir().unwrap();
+    let moment = block_at(9, 7);
+    let path = note(root.path(), moment.date_naive(), b"");
+    let append = |text: &str, placement: &Placement| {
+        append_entry(root.path(), &moment, false, placement, Block, text).unwrap()
+    };
+    append(" first ", &Placement::default());
+    assert_eq!(fs::read(&path).unwrap(), b"**9:07am**\nfirst\n\n---\n");
+    append("second\nline", &Placement::default());
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "**9:07am**\nfirst\n\n---\n\n**9:07am**\nsecond\nline\n\n---\n"
+    );
+
+    fs::write(&path, b"# Journal\nold\n## Next\n").unwrap();
+    append("entry", &journal());
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "# Journal\nold\n\n**9:07am**\nentry\n\n---\n\n## Next\n"
+    );
+
+    fs::write(&path, b"\xef\xbb\xbf# Journal\r\nold\r\n").unwrap();
+    append("crlf", &journal());
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        "\u{feff}# Journal\r\nold\r\n\r\n**9:07am**\r\ncrlf\r\n\r\n---\r\n".as_bytes()
+    );
 }

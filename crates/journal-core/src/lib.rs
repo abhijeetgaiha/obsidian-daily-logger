@@ -164,14 +164,46 @@ pub fn locate_daily_note(root: &Path, today: NaiveDate) -> Result<Option<Located
     }))
 }
 
-pub fn format_timestamp<Tz: TimeZone>(moment: &DateTime<Tz>) -> String {
+/// How an entry is laid out in the note.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EntryFormat {
+    /// `[1:05pm] text`
+    #[default]
+    Inline,
+    /// `**1:05pm**`, the text on the next line, a blank line, then `---`.
+    Block,
+}
+
+/// Local clock time such as `1:05pm`.
+pub fn format_clock_time<Tz: TimeZone>(moment: &DateTime<Tz>) -> String {
     let hour = moment.hour() % 12;
     format!(
-        "[{}:{:02}{}]",
+        "{}:{:02}{}",
         if hour == 0 { 12 } else { hour },
         moment.minute(),
         if moment.hour() < 12 { "am" } else { "pm" }
     )
+}
+
+pub fn format_timestamp<Tz: TimeZone>(moment: &DateTime<Tz>) -> String {
+    format!("[{}]", format_clock_time(moment))
+}
+
+/// Renders a trimmed entry; `newline` is used only for the format's own line breaks.
+pub fn render_entry<Tz: TimeZone>(
+    format: EntryFormat,
+    moment: &DateTime<Tz>,
+    text: &str,
+    newline: &str,
+) -> String {
+    match format {
+        EntryFormat::Inline => format!("{} {}", format_timestamp(moment), text),
+        EntryFormat::Block => {
+            let blank = newline.repeat(2);
+            // The blank line before `---` keeps the text from becoming a setext heading.
+            format!("**{}**{newline}{text}{blank}---", format_clock_time(moment))
+        }
+    }
 }
 
 pub fn trim_entry(text: &str) -> &str {
@@ -182,6 +214,15 @@ pub fn trim_entry(text: &str) -> &str {
 pub fn build_updated_note(
     data: &[u8],
     entry: &str,
+    placement: &Placement,
+) -> Result<Vec<u8>, LogError> {
+    build_updated_note_with(data, |_| entry.to_owned(), placement)
+}
+
+/// Like `build_updated_note`, but renders the entry with the note's detected newline.
+pub fn build_updated_note_with(
+    data: &[u8],
+    render: impl FnOnce(&str) -> String,
     placement: &Placement,
 ) -> Result<Vec<u8>, LogError> {
     let (bom, body) = match data.strip_prefix(BOM) {
@@ -222,6 +263,8 @@ pub fn build_updated_note(
         }
     };
     let (before, after) = text.split_at(insertion);
+    let entry = render(newline);
+    let entry = entry.as_str();
     let double_newline = newline.repeat(2);
     let leading = if before.is_empty() || before.ends_with(&double_newline) {
         ""
@@ -288,6 +331,7 @@ pub fn append_entry<Tz: TimeZone>(
     moment: &DateTime<Tz>,
     use_yesterday: bool,
     placement: &Placement,
+    format: EntryFormat,
     text: &str,
 ) -> Result<PathBuf, LogError> {
     let text = trim_entry(text);
@@ -300,8 +344,11 @@ pub fn append_entry<Tz: TimeZone>(
         path: path.clone(),
         source,
     })?;
-    let entry = format!("{} {}", format_timestamp(moment), text);
-    let updated = build_updated_note(&data, &entry, placement)?;
+    let updated = build_updated_note_with(
+        &data,
+        |newline| render_entry(format, moment, text, newline),
+        placement,
+    )?;
     atomic_write(&path, &updated).map_err(|source| LogError::Io {
         operation: "write",
         path: path.clone(),

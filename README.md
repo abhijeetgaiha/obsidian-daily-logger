@@ -16,7 +16,12 @@ Launch normally and type into the focused text box.
   10 seconds while typing continuously), and immediately when the window loses
   focus. A brief **Draft saved** appears beside the file name.
 - **Use yesterday if today is missing** is initially unchecked. Changes persist
-  immediately. Today always takes priority.
+  immediately. Today always takes priority. At launch, if today's note exists,
+  the box is unchecked and saved; tick it again if you need it.
+- **Block format** (next to it) switches the entry format and also persists
+  immediately. Unchecked logs the inline `[1:05pm] text`; checked logs a block
+  (see [Note-writing contract](#note-writing-contract)). The same choice is
+  available as **Entry format** in Settings.
 - The bottom-right corner shows the daily note's file name without its path or
   extension, e.g. `2026-09-26`. If today's note is missing, yesterday's name is
   shown even while the checkbox is unchecked, dimmed to show it will not be used
@@ -69,6 +74,8 @@ option to choose a different settings file.
   setting. To use a new heading, add it to the daily note and reopen Settings.
   **If the heading appears more than once** chooses between showing an error
   (default), using the first, or using the last occurrence.
+- **Entry format:** **Inline** (`[1:05pm] text`, the default) or **Block**.
+  Placement is the same for both.
 - **Invalid file:** every valid value is filled in and the problems are listed.
   Pick new settings and **Save** to replace the file. Unknown fields are dropped.
 
@@ -91,6 +98,7 @@ existing journal folder**. On Windows, escape backslashes in JSON:
   "vault_root": "C:\\Notes\\Journal",
   "heading": "# Journal",
   "duplicate_heading": "error",
+  "entry_format": "inline",
   "use_yesterday_if_today_missing": false
 }
 ```
@@ -100,7 +108,8 @@ On macOS, use the absolute POSIX path to the journal folder. Paths are literal:
 directory if needed. The app never chooses a default vault, and it replaces
 malformed configuration only when you save from the settings dialog. Unknown
 fields and wrong types are rejected. Optional fields: `heading` defaults to `""`
-(end of file), `duplicate_heading` to `"error"` (or `"first"`/`"last"`), and the
+(end of file), `duplicate_heading` to `"error"` (or `"first"`/`"last"`),
+`entry_format` to `"inline"` (or `"block"`), and the
 fallback to `false`. Configurations written before the heading setting existed
 therefore append to the end of the note until a heading is set. A hand-edited
 `heading` may be any Markdown heading (1–6 `#`, a space, then text), even one
@@ -122,6 +131,18 @@ running it, but with a configurable heading:
 
 - Capture local time once and prefix the outer-trimmed entry with a timestamp
   such as `[1:05pm]`. Preserve internal spaces, Unicode, and line breaks.
+- With `"entry_format": "block"`, write the bold time, the trimmed entry on the
+  next line, a blank line, and a closing `---` instead:
+
+  ```markdown
+  **1:05pm**
+  entry text
+
+  ---
+  ```
+
+  The blank line before `---` stops the entry's last line from becoming a
+  Markdown heading. Consecutive blocks are separated by a single `---`.
 - Use today's note. If missing, unchecked fallback reports an error; checked
   fallback uses yesterday automatically. Never create notes. Yesterday is the
   previous calendar date, including across DST.

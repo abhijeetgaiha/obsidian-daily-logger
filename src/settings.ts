@@ -1,6 +1,6 @@
 import {
-  errorMessage, type DuplicateHeading, type FormResult, type JournalApi, type Settings,
-  type SettingsForm,
+  errorMessage, type DuplicateHeading, type EntryFormat, type FormResult, type JournalApi,
+  type Settings, type SettingsForm,
 } from "./api";
 
 interface FieldContext {
@@ -144,6 +144,29 @@ function headingField(api: JournalApi, context: FieldContext): Field {
   };
 }
 
+function entryFormatField(_api: JournalApi, context: FieldContext): Field {
+  const element = document.createElement("div");
+  element.className = "setting";
+  element.innerHTML = `
+    <label class="setting-label" for="settings-entry-format">Entry format</label>
+    <select id="settings-entry-format">
+      <option value="inline">Inline: [1:05pm] text</option>
+      <option value="block">Block: bold time, text, then ---</option>
+    </select>
+  `;
+  const select = element.querySelector<HTMLSelectElement>("#settings-entry-format")!;
+  const onChange = () => context.update({ entry_format: select.value as EntryFormat });
+  select.addEventListener("change", onChange);
+  return {
+    element,
+    render(form, disabled) {
+      select.value = form.entry_format;
+      select.disabled = disabled;
+    },
+    destroy: () => select.removeEventListener("change", onChange),
+  };
+}
+
 function fallbackField(_api: JournalApi, context: FieldContext): Field {
   const element = document.createElement("label");
   element.className = "setting fallback";
@@ -164,7 +187,7 @@ function fallbackField(_api: JournalApi, context: FieldContext): Field {
   };
 }
 
-const fieldFactories = [folderField, headingField, fallbackField];
+const fieldFactories = [folderField, headingField, entryFormatField, fallbackField];
 
 export interface SettingsHooks {
   onSaved(settings: Settings): void;
@@ -208,6 +231,7 @@ export function mountSettingsDialog(
     vault_root: null,
     heading: "",
     duplicate_heading: "error",
+    entry_format: "inline",
     use_yesterday_if_today_missing: false,
   };
   let open = false;

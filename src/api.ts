@@ -10,15 +10,19 @@ export interface NoteLabel {
 export interface Settings {
   config_path: string;
   use_yesterday_if_today_missing: boolean;
+  entry_format: EntryFormat;
   note: NoteLabel | null;
 }
 
 export type DuplicateHeading = "error" | "first" | "last";
 
+export type EntryFormat = "inline" | "block";
+
 export interface SettingsForm {
   vault_root: string | null;
   heading: string;
   duplicate_heading: DuplicateHeading;
+  entry_format: EntryFormat;
   use_yesterday_if_today_missing: boolean;
 }
 
@@ -44,6 +48,7 @@ export interface JournalApi {
   saveDraft(text: string): Promise<void>;
   loadSettings(): Promise<Settings>;
   setFallback(enabled: boolean): Promise<Settings>;
+  setEntryFormat(format: EntryFormat): Promise<Settings>;
   readSettingsForm(): Promise<FormResult>;
   listHeadings(vaultRoot: string | null): Promise<HeadingList>;
   pickVaultFolder(current: string | null): Promise<string | null>;
@@ -60,6 +65,7 @@ export const api: JournalApi = {
   saveDraft: (text) => invoke<void>("save_draft", { text }),
   loadSettings: () => invoke<Settings>("load_settings"),
   setFallback: (enabled) => invoke<Settings>("set_fallback", { enabled }),
+  setEntryFormat: (format) => invoke<Settings>("set_entry_format", { format }),
   readSettingsForm: () => invoke<FormResult>("read_settings_form"),
   listHeadings: (vaultRoot) => invoke<HeadingList>("list_headings", { vaultRoot }),
   pickVaultFolder: (current) => invoke<string | null>("pick_vault_folder", { current }),

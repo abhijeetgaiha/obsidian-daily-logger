@@ -58,7 +58,15 @@ button:focus-visible { outline: 2px solid #537a99; }
   font-size: 12px;
 }
 
-.fallback {
+.toggles {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+}
+
+.fallback,
+.toggle {
   display: flex;
   flex: none;
   align-items: center;

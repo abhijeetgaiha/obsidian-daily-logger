@@ -9,10 +9,11 @@ import { mountJournal } from "./ui";
 const initial: Settings = {
   config_path: "test-config.json",
   use_yesterday_if_today_missing: false,
+  entry_format: "inline",
   note: { name: "2026-09-26", is_yesterday: false },
 };
 
-const noHeading = { heading: "", duplicate_heading: "error" } as const;
+const noHeading = { heading: "", duplicate_heading: "error", entry_format: "inline" } as const;
 
 const validForm: FormResult = {
   config_path: "/config/config.json",
@@ -44,11 +45,15 @@ function mockApi() {
     setFallback: vi.fn<JournalApi["setFallback"]>().mockImplementation(async (enabled) => ({
       ...initial, use_yesterday_if_today_missing: enabled,
     })),
+    setEntryFormat: vi.fn<JournalApi["setEntryFormat"]>().mockImplementation(async (format) => ({
+      ...initial, entry_format: format,
+    })),
     readSettingsForm: vi.fn<JournalApi["readSettingsForm"]>().mockResolvedValue(validForm),
     listHeadings: vi.fn<JournalApi["listHeadings"]>().mockResolvedValue(noteHeadings),
     pickVaultFolder: vi.fn<JournalApi["pickVaultFolder"]>().mockResolvedValue("/picked"),
     saveSettings: vi.fn<JournalApi["saveSettings"]>().mockImplementation(async (form) => ({
       ...initial, use_yesterday_if_today_missing: form.use_yesterday_if_today_missing,
+      entry_format: form.entry_format,
     })),
     submit: vi.fn<JournalApi["submit"]>().mockResolvedValue({ note_path: "today.md" }),
     exit: vi.fn<JournalApi["exit"]>().mockResolvedValue(undefined),
@@ -77,6 +82,7 @@ async function setup(api = mockApi()) {
     api,
     entry: root.querySelector<HTMLTextAreaElement>("#entry")!,
     checkbox: root.querySelector<HTMLInputElement>("#fallback")!,
+    blockFormat: root.querySelector<HTMLInputElement>("#block-format")!,
     message: root.querySelector<HTMLParagraphElement>("#message")!,
     noteName: root.querySelector<HTMLSpanElement>("#note-name")!,
     gear: root.querySelector<HTMLButtonElement>("#settings")!,
@@ -89,6 +95,7 @@ async function setup(api = mockApi()) {
     heading: root.querySelector<HTMLSelectElement>("#settings-heading")!,
     headingNote: root.querySelector<HTMLParagraphElement>("#settings-heading-note")!,
     duplicates: root.querySelector<HTMLSelectElement>("#settings-duplicates")!,
+    entryFormat: root.querySelector<HTMLSelectElement>("#settings-entry-format")!,
     dialogMessage: root.querySelector<HTMLParagraphElement>("#settings-message")!,
     saveButton: root.querySelector<HTMLButtonElement>("#settings-save")!,
     cancelButton: root.querySelector<HTMLButtonElement>("#settings-cancel")!,
@@ -268,8 +275,58 @@ describe("minimal journal window", () => {
     expect(checkbox.checked).toBe(true);
     cleanups.pop()?.();
     document.body.replaceChildren();
-    api.loadSettings.mockResolvedValue({ ...initial, use_yesterday_if_today_missing: true });
+    const yesterday = { name: "2026-09-25", is_yesterday: true };
+    api.loadSettings.mockResolvedValue({
+      ...initial, use_yesterday_if_today_missing: true, note: yesterday,
+    });
     expect((await setup(api)).checkbox.checked).toBe(true);
+    expect(api.setFallback).toHaveBeenCalledOnce();
+  });
+
+  it("unchecks and saves the fallback at launch when today's note exists", async () => {
+    const api = mockApi();
+    api.loadSettings.mockResolvedValue({ ...initial, use_yesterday_if_today_missing: true });
+    const { checkbox, entry, message } = await setup(api);
+    expect(api.setFallback).toHaveBeenCalledExactlyOnceWith(false);
+    expect(checkbox.checked).toBe(false);
+    expect(checkbox.disabled).toBe(false);
+    expect(message.textContent).toBe("");
+    checkbox.checked = true;
+    checkbox.dispatchEvent(new Event("change"));
+    await flush();
+    expect(api.setFallback).toHaveBeenLastCalledWith(true);
+    api.submit.mockRejectedValue(new Error("Missing note"));
+    entry.value = "draft";
+    key(entry, "Enter");
+    await flush();
+    expect(api.setFallback).toHaveBeenCalledTimes(2);
+    expect(checkbox.checked).toBe(true);
+  });
+
+  it("leaves the fallback alone at launch without today's note or when it is off", async () => {
+    const api = mockApi();
+    for (const note of [{ name: "2026-09-25", is_yesterday: true }, null]) {
+      api.loadSettings.mockResolvedValue({
+        ...initial, use_yesterday_if_today_missing: true, note,
+      });
+      expect((await setup(api)).checkbox.checked).toBe(true);
+      cleanups.pop()?.();
+      document.body.replaceChildren();
+    }
+    api.loadSettings.mockResolvedValue(initial);
+    expect((await setup(api)).checkbox.checked).toBe(false);
+    expect(api.setFallback).not.toHaveBeenCalled();
+  });
+
+  it("shows an error and keeps the saved fallback if unchecking at launch fails", async () => {
+    const api = mockApi();
+    api.loadSettings.mockResolvedValue({ ...initial, use_yesterday_if_today_missing: true });
+    api.setFallback.mockRejectedValue(new Error("Read-only config"));
+    const { checkbox, message } = await setup(api);
+    expect(checkbox.checked).toBe(true);
+    expect(checkbox.disabled).toBe(false);
+    expect(message.textContent).toBe("Read-only config");
+    expect(message.className).toBe("error");
   });
 
   it("rolls back a failed preference write and retains the draft", async () => {
@@ -283,6 +340,48 @@ describe("minimal journal window", () => {
     expect(checkbox.checked).toBe(false);
     expect(entry.value).toBe("draft");
     expect(message.textContent).toBe("Read-only config");
+  });
+
+  it("persists the block format toggle and rolls it back on failure", async () => {
+    const api = mockApi();
+    const { blockFormat, checkbox, entry } = await setup(api);
+    expect(blockFormat.checked).toBe(false);
+    expect(blockFormat.disabled).toBe(false);
+    blockFormat.checked = true;
+    blockFormat.dispatchEvent(new Event("change"));
+    await flush();
+    expect(api.setEntryFormat).toHaveBeenCalledExactlyOnceWith("block");
+    expect(api.setFallback).not.toHaveBeenCalled();
+    expect(blockFormat.checked).toBe(true);
+    expect(checkbox.checked).toBe(false);
+    expect(document.activeElement).toBe(entry);
+    api.setEntryFormat.mockRejectedValueOnce(new Error("Read-only config"));
+    blockFormat.checked = false;
+    blockFormat.dispatchEvent(new Event("change"));
+    await flush();
+    expect(api.setEntryFormat).toHaveBeenLastCalledWith("inline");
+    expect(blockFormat.checked).toBe(true);
+    cleanups.pop()?.();
+    document.body.replaceChildren();
+    api.loadSettings.mockResolvedValue({ ...initial, entry_format: "block" });
+    expect((await setup(api)).blockFormat.checked).toBe(true);
+  });
+
+  it("disables the block format toggle during a write and without settings", async () => {
+    const api = mockApi();
+    let resolve!: (result: SavedEntry) => void;
+    api.submit.mockReturnValue(new Promise((done) => { resolve = done; }));
+    const { entry, blockFormat } = await setup(api);
+    key(entry, "Enter");
+    await flush();
+    expect(blockFormat.disabled).toBe(true);
+    resolve({ note_path: "today.md" });
+    await flush();
+    expect(blockFormat.disabled).toBe(true);
+    cleanups.pop()?.();
+    document.body.replaceChildren();
+    api.loadSettings.mockRejectedValue(new Error("bad config"));
+    expect((await setup(api)).blockFormat.disabled).toBe(true);
   });
 
   it("does not race a pending preference write with a save", async () => {
@@ -412,15 +511,16 @@ describe("minimal journal window", () => {
     api.readSettingsForm.mockResolvedValue({
       ...validForm, form: {
         vault_root: "/vault", heading: "## Daily Log", duplicate_heading: "last",
-        use_yesterday_if_today_missing: true,
+        entry_format: "block", use_yesterday_if_today_missing: true,
       },
     });
-    const { dialog, folder, dialogFallback, issue, saveButton, journal, entry, choose } =
-      await openSettings(api);
+    const { dialog, folder, dialogFallback, issue, saveButton, journal, entry, choose,
+      entryFormat } = await openSettings(api);
     expect(api.readSettingsForm).toHaveBeenCalledOnce();
     expect(dialog.hidden).toBe(false);
     expect(folder.textContent).toBe("/vault");
     expect(dialogFallback.checked).toBe(true);
+    expect(entryFormat.value).toBe("block");
     expect(issue.textContent).toBe("");
     expect(saveButton.disabled).toBe(false);
     expect(journal.hasAttribute("inert")).toBe(true);
@@ -706,9 +806,25 @@ describe("minimal journal window", () => {
     await flush();
     expect(api.saveSettings).toHaveBeenCalledExactlyOnceWith({
       vault_root: "/vault", heading: "## Daily Log", duplicate_heading: "first",
-      use_yesterday_if_today_missing: false,
+      entry_format: "inline", use_yesterday_if_today_missing: false,
     });
     expect(document.activeElement).toBe(entry);
+  });
+
+  it("saves the entry format from the dialog and updates the main toggle", async () => {
+    const api = mockApi();
+    const { entryFormat, saveButton, blockFormat } = await openSettings(api);
+    expect(entryFormat.value).toBe("inline");
+    expect(blockFormat.checked).toBe(false);
+    entryFormat.value = "block";
+    entryFormat.dispatchEvent(new Event("change"));
+    saveButton.click();
+    await flush();
+    expect(api.saveSettings).toHaveBeenCalledExactlyOnceWith({
+      ...validForm.form, entry_format: "block",
+    });
+    expect(blockFormat.checked).toBe(true);
+    expect(api.setEntryFormat).not.toHaveBeenCalled();
   });
 
   it("renders note headings as text", async () => {

@@ -20,10 +20,16 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
         placeholder="Write a journal entry..." spellcheck="true"
         aria-describedby="message"></textarea>
       <div class="status-row">
-        <label class="fallback">
-          <input id="fallback" type="checkbox" />
-          Use yesterday if today is missing
-        </label>
+        <div class="toggles">
+          <label class="fallback">
+            <input id="fallback" type="checkbox" />
+            Use yesterday if today is missing
+          </label>
+          <label class="toggle" title="Log as a bold time, the text, then a --- rule">
+            <input id="block-format" type="checkbox" />
+            Block format
+          </label>
+        </div>
         <div class="note">
           <span id="autosave" role="status" aria-live="polite"></span>
           <span id="note-name"></span>
@@ -37,6 +43,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   const journal = root.querySelector<HTMLDivElement>("#journal")!;
   const entry = root.querySelector<HTMLTextAreaElement>("#entry")!;
   const checkbox = root.querySelector<HTMLInputElement>("#fallback")!;
+  const blockFormat = root.querySelector<HTMLInputElement>("#block-format")!;
   const noteName = root.querySelector<HTMLSpanElement>("#note-name")!;
   const autosaveNotice = root.querySelector<HTMLSpanElement>("#autosave")!;
   const gear = root.querySelector<HTMLButtonElement>("#settings")!;
@@ -90,9 +97,11 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     const blocked = busy || dialog.isOpen;
     entry.readOnly = blocked || !draftLoaded || savedPath !== undefined;
     checkbox.disabled = blocked || settings === undefined || savedPath !== undefined;
+    blockFormat.disabled = checkbox.disabled;
     gear.disabled = blocked || savedPath !== undefined;
     journal.toggleAttribute("inert", dialog.isOpen);
     checkbox.checked = settings?.use_yesterday_if_today_missing ?? false;
+    blockFormat.checked = settings?.entry_format === "block";
     const inactive = note?.is_yesterday === true && !checkbox.checked;
     noteName.textContent = note?.name ?? "No File Selected";
     noteName.classList.toggle("inactive", inactive);
@@ -171,14 +180,24 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   }
 
   async function changeFallback() {
-    if (busy || dialog.isOpen || savedPath !== undefined) return;
     const enabled = checkbox.checked;
+    await changeSetting(() => api.setFallback(enabled));
+  }
+
+  async function changeEntryFormat() {
+    const format = blockFormat.checked ? "block" : "inline";
+    await changeSetting(() => api.setEntryFormat(format));
+  }
+
+  // Callers read the new value before this runs, because render() restores both checkboxes.
+  async function changeSetting(apply: () => Promise<Settings>) {
+    if (busy || dialog.isOpen || savedPath !== undefined) return;
     busy = true;
     message.textContent = "";
     render();
     await autosave.idle();
     try {
-      settings = await api.setFallback(enabled);
+      settings = await apply();
       note = settings.note ?? undefined;
     } catch (error) {
       showError(error);
@@ -250,6 +269,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   entry.addEventListener("input", onInput);
   window.addEventListener("blur", onBlur);
   checkbox.addEventListener("change", changeFallback);
+  blockFormat.addEventListener("change", changeEntryFormat);
   gear.addEventListener("click", openSettings);
   dragArea.addEventListener("pointerdown", startDragging);
   window.addEventListener("keydown", onKeyDown);
@@ -264,6 +284,10 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     }
     try {
       await reloadSettings();
+      if (settings?.use_yesterday_if_today_missing && note !== undefined && !note.is_yesterday) {
+        settings = await api.setFallback(false);
+        note = settings.note ?? undefined;
+      }
     } catch (error) {
       errors.push(errorMessage(error));
     }
@@ -283,6 +307,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     window.removeEventListener("blur", onBlur);
     window.removeEventListener("keydown", onKeyDown);
     checkbox.removeEventListener("change", changeFallback);
+    blockFormat.removeEventListener("change", changeEntryFormat);
     gear.removeEventListener("click", openSettings);
     dialog.destroy();
     dragArea.removeEventListener("pointerdown", startDragging);

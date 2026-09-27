@@ -5,6 +5,7 @@ fn main() {
             "save_draft",
             "load_settings",
             "set_fallback",
+            "set_entry_format",
             "read_settings_form",
             "list_headings",
             "pick_vault_folder",

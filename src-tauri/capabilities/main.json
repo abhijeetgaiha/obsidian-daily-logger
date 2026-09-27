@@ -11,6 +11,7 @@
     "allow-save-draft",
     "allow-load-settings",
     "allow-set-fallback",
+    "allow-set-entry-format",
     "allow-read-settings-form",
     "allow-list-headings",
     "allow-pick-vault-folder",
