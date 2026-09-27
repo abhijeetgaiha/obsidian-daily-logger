@@ -305,10 +305,12 @@ restrictive CSP and window-scoped command permissions.
 on Windows x64, native Windows ARM64, and native ARM64 macOS, from the same commit.
 All must pass.
 
-`build.yml` runs manually or on `v*` tags and uploads private Windows x64 and ARM64
-NSIS installers plus macOS app/DMG artifacts. No public release or updater is created. Workflows use
-pinned actions, locked dependency resolution, and read-only repository
-permissions. The account needs an available private-repository Actions allowance.
+`build.yml` runs manually or on `v*` tags and uploads Windows x64 and ARM64
+NSIS installers plus macOS app/DMG workflow artifacts. It does not create a
+GitHub release or updater: releases are published manually on the
+[Releases page](https://github.com/abhijeetgaiha/obsidian-daily-logger/releases)
+from a tag build's artifacts. Workflows use pinned actions, locked dependency
+resolution, and read-only repository permissions.
 
 Artifacts are personal-use builds without trusted Windows signing or Apple
 Developer ID signing/notarization. SmartScreen or Gatekeeper may warn or block
