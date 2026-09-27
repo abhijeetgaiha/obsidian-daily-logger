@@ -1,5 +1,6 @@
 {
   "vault_root": "",
+  "note_source": "periodic",
   "heading": "# Journal",
   "duplicate_heading": "error",
   "entry_format": "inline",

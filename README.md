@@ -25,13 +25,19 @@ Launch normally and type into the focused text box.
 - The bottom-right corner shows the daily note's file name without its path or
   extension, e.g. `2026-09-26`. If today's note is missing, yesterday's name is
   shown even while the checkbox is unchecked, dimmed to show it will not be used
-  until the box is ticked. When neither note exists, or the configuration is
-  invalid, it shows **No File Selected**. The name refreshes at startup, after
+  until the box is ticked. When neither note exists, the note source is not
+  set, or the configuration is invalid, it shows **No File Selected**. The name refreshes at startup, after
   checkbox changes, after saving settings, and on each Enter.
 - The **gear** to the right of the file name opens the settings dialog for the
-  standard `config.json` (see below). Escape or Cancel closes the dialog without
-  exiting; Enter does not log the entry while it is open.
+  standard `config.json` (see below). While it is open, the window shows only
+  the dialog and grows to fit it without scrolling; drag the **Settings** title
+  to move it. Escape or Cancel closes the dialog, returning the window to its
+  normal size, without exiting; Enter does not log the entry while it is open.
 - Errors retain the draft. Failed preference writes restore the saved checkbox.
+  Any configuration problem (missing or invalid `config.json`, vault, or
+  daily-notes plugin settings) shows just **Config error!**; open the gear to
+  see the details and fix them. Other errors, such as a missing daily note or
+  heading, show their own message.
 
 There is no tray, global shortcut, background mode, or command-line logging
 interface. Drag the narrow empty strip above the text box to move it.
@@ -55,20 +61,29 @@ app exits keeping the last autosaved draft. Autosave failures appear as an error
 and are retried on the next edit. Forced termination or a crash can lose up to
 the last second of typing (or up to 10 seconds during continuous typing).
 
-### Configure the journal folder
+### Configure the vault
 
 Click the **gear** in the bottom-right corner. The settings dialog always uses
 `config.json` in the application's per-user configuration directory; there is no
 option to choose a different settings file.
 
-- **No file yet:** the form starts empty. Use **Choose…** to pick the journal
-  folder with the system folder picker, then **Save** to create the file (and its
-  directory).
+- **No file yet:** the form starts empty. Use **Choose…** to pick the Obsidian
+  vault (the folder containing `.obsidian`) with the system folder picker, then
+  **Save** to create the file (and its directory).
 - **Valid file:** the current settings are loaded for editing.
+- **Daily notes from:** **Periodic Notes** or **Daily notes (core plugin)**. The
+  daily-note folder and file-name format are read from that plugin's settings in
+  the vault (see [Finding the daily note](#finding-the-daily-note)), and the
+  line below shows the result, e.g. `Periodic Notes: daily/YYYY/YYYY-MM/YYYY-MM-DD`.
+  If no source is saved yet, the plugin enabled in the vault is pre-selected
+  (Periodic Notes if both are) with a notice; **Save** stores it. If neither is
+  enabled, nothing is selected, the problem is shown, and Save is unavailable.
+  Changing the source rescans the headings.
 - **Insert under heading:** a dropdown with **End of file** (append to the end
   of the note) followed by every distinct heading in the daily note that the
   status row shows (today's, or yesterday's if today's is missing), read from the
-  folder selected in the dialog and rescanned after **Choose…**. Without a note
+  vault and source selected in the dialog and rescanned after **Choose…** or a
+  source change. Without a note
   or folder, only End of file is offered. If the saved heading is not in that
   note, End of file is selected and a notice says so; Cancel keeps the saved
   setting. To use a new heading, add it to the daily note and reopen Settings.
@@ -82,20 +97,22 @@ option to choose a different settings file.
 Settings are validated before anything is written; save errors stay in the dialog
 and never affect your draft. Settings cannot be changed after an entry is logged.
 
-You can also edit the file by hand. Configuration errors display the exact
-expected path:
+You can also edit the file by hand. The settings dialog shows the file's exact
+path and lists its problems:
 
 | OS | Location |
 | --- | --- |
 | Windows | `%APPDATA%\local.journal.logger\config.json` |
 | macOS | `config.json` inside `local.journal.logger` in your user's Library > Application Support |
 
-Copy `config.example.json` and set `vault_root` to an **absolute path to an
-existing journal folder**. On Windows, escape backslashes in JSON:
+Copy `config.example.json`, set `vault_root` to the **absolute path of an
+Obsidian vault**, and `note_source` to `"periodic"` (Periodic Notes) or
+`"daily"` (core Daily notes). On Windows, escape backslashes in JSON:
 
 ```json
 {
   "vault_root": "C:\\Notes\\Journal",
+  "note_source": "periodic",
   "heading": "# Journal",
   "duplicate_heading": "error",
   "entry_format": "inline",
@@ -103,11 +120,14 @@ existing journal folder**. On Windows, escape backslashes in JSON:
 }
 ```
 
-On macOS, use the absolute POSIX path to the journal folder. Paths are literal:
+On macOS, use the absolute POSIX path to the vault. Paths are literal:
 `~` and environment-variable placeholders are not expanded. Create the config
 directory if needed. The app never chooses a default vault, and it replaces
 malformed configuration only when you save from the settings dialog. Unknown
-fields and wrong types are rejected. Optional fields: `heading` defaults to `""`
+fields and wrong types are rejected. Configurations without `note_source` (written by 0.7.0 and earlier)
+still load, and the checkboxes and draft keep working, but logging and the file
+name report that the source must be chosen in Settings; the app never writes it
+on its own. Optional fields: `heading` defaults to `""`
 (end of file), `duplicate_heading` to `"error"` (or `"first"`/`"last"`),
 `entry_format` to `"inline"` (or `"block"`), and the
 fallback to `false`. Configurations written before the heading setting existed
@@ -121,10 +141,40 @@ Checkbox changes and the settings dialog rewrite the JSON without preserving
 formatting; the checkbox keeps the configured root and heading. Keep personal
 configuration and notes outside the source repository.
 
+### Finding the daily note
+
+The folder and file name come from the vault's Obsidian settings in
+`<vault_root>/.obsidian/`, re-read on every lookup, so changes made in Obsidian
+apply without restarting the app:
+
+- **Periodic Notes** (`"note_source": "periodic"`): must be listed in
+  `community-plugins.json` and have daily notes turned on in
+  `plugins/periodic-notes/data.json`. Both the 0.x layout (`daily`) and the 1.0
+  beta layout (the `day` settings of the active calendar set) are read; weekly,
+  monthly, and other periods are ignored.
+- **Daily notes** (`"note_source": "daily"`): must be enabled in
+  `core-plugins.json`. Its `folder` and `format` come from `daily-notes.json`.
+
+An empty folder is the vault root and an empty format is `YYYY-MM-DD`, as in
+Obsidian. The note is the folder, the formatted date, and `.md`; a `/` in the
+format creates subfolders, so folder `daily` with format
+`YYYY/YYYY-MM/YYYY-MM-DD` gives `daily/2026/2026-09/2026-09-27.md`.
+
+Formats use Moment.js tokens: `YYYY YY M MM MMM MMMM D DD Do DDD DDDD d ddd
+dddd E W WW Wo GGGG GG Q Qo`, with `[text]` for literal text. Month and day
+names are English. Time tokens, locale-dependent week tokens (`w ww gggg gg e`),
+and localized presets (`L LL LT`…) are rejected with an error, as are paths
+that leave the vault.
+
+The chosen plugin must be enabled. A folder without `.obsidian`, a disabled
+plugin, or an unreadable settings file is an error that names the problem. Only
+the default `.obsidian` configuration folder name is supported, and templates
+are ignored: notes are never created.
+
 ### Note-writing contract
 
-Daily notes must already exist in the layout
-`daily` > `YYYY` > `YYYY-MM` > `YYYY-MM-DD.md`.
+Daily notes must already exist where the chosen Obsidian plugin puts them (see
+[Finding the daily note](#finding-the-daily-note)).
 
 The Rust core is based on the inspected `log.py` behavior, without shipping or
 running it, but with a configurable heading:

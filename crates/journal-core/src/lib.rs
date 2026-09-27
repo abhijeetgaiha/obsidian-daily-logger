@@ -1,4 +1,8 @@
-use chrono::{DateTime, Datelike, NaiveDate, TimeZone, Timelike};
+pub mod moment;
+pub mod obsidian;
+
+use chrono::{DateTime, NaiveDate, TimeZone, Timelike};
+use moment::DateFormat;
 use regex::Regex;
 use std::{
     fs,
@@ -19,16 +23,39 @@ pub enum LogError {
     #[error("Journal text cannot be empty.")]
     EmptyEntry,
     #[error(
-        "Today's daily note ({date}) is missing. Enable yesterday's fallback to use yesterday."
+        "Today's daily note ({path}) is missing. Enable yesterday's fallback to use yesterday."
     )]
-    TodayMissing { date: NaiveDate },
-    #[error("No daily note found for {today} or {yesterday}.")]
+    TodayMissing { date: NaiveDate, path: String },
+    #[error("No daily note found for {today} or {yesterday} (looking for {pattern}.md).")]
     NotesMissing {
         today: NaiveDate,
         yesterday: NaiveDate,
+        pattern: String,
     },
     #[error("The previous calendar date cannot be represented.")]
     DateRange,
+    #[error(
+        "{} is not an Obsidian vault: it has no .obsidian folder. Choose the vault's root \
+         folder in Settings.",
+        root.display()
+    )]
+    NotAVault { root: PathBuf },
+    #[error(
+        "No daily-notes plugin is enabled in this vault. In Obsidian, enable the Daily notes \
+         core plugin, or Periodic Notes with daily notes turned on."
+    )]
+    NoDailyNotesPlugin,
+    #[error(
+        "{plugin} is not enabled in this vault. Enable it in Obsidian or choose the other \
+         plugin in Settings."
+    )]
+    PluginDisabled { plugin: &'static str },
+    #[error("Could not use the Obsidian settings in {}: {detail}", path.display())]
+    PluginSettings { path: PathBuf, detail: String },
+    #[error("The daily note format cannot be used: {0}")]
+    DateFormat(String),
+    #[error("The daily note path \"{0}\" is not a valid path inside the vault.")]
+    NotePath(String),
     #[error(
         "The heading \"{heading}\" was not found in the daily note. Add it to the note or \
          change the heading in Settings."
@@ -101,11 +128,74 @@ pub fn list_headings(text: &str) -> Vec<String> {
     headings
 }
 
-pub fn daily_note_path(root: &Path, date: NaiveDate) -> PathBuf {
-    root.join("daily")
-        .join(format!("{:04}", date.year()))
-        .join(date.format("%Y-%m").to_string())
-        .join(format!("{}.md", date.format("%Y-%m-%d")))
+/// Where daily notes live: a vault-relative folder plus a Moment.js file-name format,
+/// as configured in Obsidian. A `/` in the formatted name creates subfolders.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteLayout {
+    folder: Vec<String>,
+    format: DateFormat,
+}
+
+/// Obsidian's default daily note format.
+pub const DEFAULT_DATE_FORMAT: &str = "YYYY-MM-DD";
+
+impl NoteLayout {
+    /// An empty folder is the vault root; an empty format is `YYYY-MM-DD`.
+    pub fn new(folder: &str, format: &str) -> Result<Self, LogError> {
+        let format = match format.trim() {
+            "" => DEFAULT_DATE_FORMAT,
+            format => format,
+        };
+        let layout = Self {
+            folder: folder
+                .split('/')
+                .map(str::trim)
+                .filter(|segment| !segment.is_empty())
+                .map(str::to_owned)
+                .collect(),
+            format: DateFormat::parse(format).map_err(LogError::DateFormat)?,
+        };
+        if layout.folder.iter().any(|segment| !valid_segment(segment)) {
+            return Err(LogError::NotePath(layout.describe()));
+        }
+        Ok(layout)
+    }
+
+    /// The folder and format joined, e.g. `daily/YYYY/YYYY-MM/YYYY-MM-DD`.
+    pub fn describe(&self) -> String {
+        self.join(self.format.as_str())
+    }
+
+    fn join(&self, name: &str) -> String {
+        self.folder
+            .iter()
+            .map(String::as_str)
+            .chain([name])
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+
+    /// The vault-relative note path with `/` separators, e.g. `daily/2026/2026-09/2026-09-27.md`.
+    pub fn relative_path(&self, date: NaiveDate) -> Result<String, LogError> {
+        let name = self.format.format(date);
+        let segments: Vec<&str> = name.split('/').filter(|s| !s.is_empty()).collect();
+        let path = self.join(&format!("{name}.md"));
+        if segments.is_empty() || !segments.iter().all(|segment| valid_segment(segment)) {
+            return Err(LogError::NotePath(path));
+        }
+        Ok(self.join(&format!("{}.md", segments.join("/"))))
+    }
+
+    pub fn path(&self, root: &Path, date: NaiveDate) -> Result<PathBuf, LogError> {
+        let relative = self.relative_path(date)?;
+        Ok(relative
+            .split('/')
+            .fold(root.to_path_buf(), |path, segment| path.join(segment)))
+    }
+}
+
+fn valid_segment(segment: &str) -> bool {
+    segment != "." && segment != ".." && !segment.contains(['\\', ':', '\0'])
 }
 
 fn is_file(path: &Path) -> Result<bool, LogError> {
@@ -122,22 +212,30 @@ fn is_file(path: &Path) -> Result<bool, LogError> {
 
 pub fn select_daily_note(
     root: &Path,
+    layout: &NoteLayout,
     today: NaiveDate,
     use_yesterday: bool,
 ) -> Result<PathBuf, LogError> {
-    let path = daily_note_path(root, today);
+    let path = layout.path(root, today)?;
     if is_file(&path)? {
         return Ok(path);
     }
     if !use_yesterday {
-        return Err(LogError::TodayMissing { date: today });
+        return Err(LogError::TodayMissing {
+            date: today,
+            path: layout.relative_path(today)?,
+        });
     }
     let yesterday = today.pred_opt().ok_or(LogError::DateRange)?;
-    let path = daily_note_path(root, yesterday);
+    let path = layout.path(root, yesterday)?;
     if is_file(&path)? {
         Ok(path)
     } else {
-        Err(LogError::NotesMissing { today, yesterday })
+        Err(LogError::NotesMissing {
+            today,
+            yesterday,
+            pattern: layout.describe(),
+        })
     }
 }
 
@@ -148,8 +246,12 @@ pub struct LocatedNote {
 }
 
 /// Finds today's note, or yesterday's if today's is missing, regardless of the fallback setting.
-pub fn locate_daily_note(root: &Path, today: NaiveDate) -> Result<Option<LocatedNote>, LogError> {
-    let path = daily_note_path(root, today);
+pub fn locate_daily_note(
+    root: &Path,
+    layout: &NoteLayout,
+    today: NaiveDate,
+) -> Result<Option<LocatedNote>, LogError> {
+    let path = layout.path(root, today)?;
     if is_file(&path)? {
         return Ok(Some(LocatedNote {
             path,
@@ -157,7 +259,7 @@ pub fn locate_daily_note(root: &Path, today: NaiveDate) -> Result<Option<Located
         }));
     }
     let yesterday = today.pred_opt().ok_or(LogError::DateRange)?;
-    let path = daily_note_path(root, yesterday);
+    let path = layout.path(root, yesterday)?;
     Ok(is_file(&path)?.then_some(LocatedNote {
         path,
         is_yesterday: true,
@@ -328,6 +430,7 @@ fn atomic_write_with_permissions(
 
 pub fn append_entry<Tz: TimeZone>(
     root: &Path,
+    layout: &NoteLayout,
     moment: &DateTime<Tz>,
     use_yesterday: bool,
     placement: &Placement,
@@ -338,7 +441,7 @@ pub fn append_entry<Tz: TimeZone>(
     if text.is_empty() {
         return Err(LogError::EmptyEntry);
     }
-    let path = select_daily_note(root, moment.date_naive(), use_yesterday)?;
+    let path = select_daily_note(root, layout, moment.date_naive(), use_yesterday)?;
     let data = fs::read(&path).map_err(|source| LogError::Io {
         operation: "read",
         path: path.clone(),

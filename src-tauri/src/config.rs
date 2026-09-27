@@ -42,10 +42,46 @@ impl From<EntryFormat> for journal_core::EntryFormat {
     }
 }
 
+/// The Obsidian plugin whose settings define where daily notes live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NoteSource {
+    Periodic,
+    Daily,
+}
+
+impl From<NoteSource> for journal_core::obsidian::NoteSource {
+    fn from(value: NoteSource) -> Self {
+        match value {
+            NoteSource::Periodic => Self::Periodic,
+            NoteSource::Daily => Self::Daily,
+        }
+    }
+}
+
+impl From<journal_core::obsidian::NoteSource> for NoteSource {
+    fn from(value: journal_core::obsidian::NoteSource) -> Self {
+        match value {
+            journal_core::obsidian::NoteSource::Periodic => Self::Periodic,
+            journal_core::obsidian::NoteSource::Daily => Self::Daily,
+        }
+    }
+}
+
+fn note_source_unset() -> AppError {
+    AppError::new(
+        "note_source_unset",
+        "Choose where daily notes come from (Periodic Notes or Daily notes) in Settings.",
+    )
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub vault_root: PathBuf,
+    /// Unset until chosen in Settings; finding a note is an error until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note_source: Option<NoteSource>,
     /// Empty appends to the end of the note; otherwise a Markdown heading such as "# Journal".
     #[serde(default)]
     pub heading: String,
@@ -75,6 +111,7 @@ pub struct Settings {
 #[serde(deny_unknown_fields)]
 pub struct SettingsForm {
     pub vault_root: Option<String>,
+    pub note_source: Option<NoteSource>,
     pub heading: String,
     pub duplicate_heading: DuplicateHeading,
     pub entry_format: EntryFormat,
@@ -95,6 +132,10 @@ pub struct HeadingList {
     pub note: Option<String>,
     pub headings: Vec<String>,
     pub problem: Option<String>,
+    /// The plugin suggested for the vault, used when no source has been chosen yet.
+    pub detected: Option<NoteSource>,
+    /// The resolved source and pattern, e.g. "Periodic Notes: daily/YYYY/YYYY-MM/YYYY-MM-DD".
+    pub layout: Option<String>,
 }
 
 fn error(path: &Path, detail: impl std::fmt::Display) -> AppError {
@@ -102,8 +143,9 @@ fn error(path: &Path, detail: impl std::fmt::Display) -> AppError {
         "configuration",
         format!(
             "Cannot use {}: {detail}\nUse the Settings gear to fix it, or edit this JSON file: \
-             \"vault_root\" must be an absolute folder, \"heading\" empty or a Markdown \
-             heading such as \"# Journal\", \"entry_format\" \"inline\" or \"block\", and \
+             \"vault_root\" must be the absolute path of an Obsidian vault, \"note_source\" \
+             \"periodic\" or \"daily\", \"heading\" empty or a Markdown heading such as \
+             \"# Journal\", \"entry_format\" \"inline\" or \"block\", and \
              \"use_yesterday_if_today_missing\" a boolean. \
              Press Enter after correcting it; your draft will be retained.",
             path.display()
@@ -195,12 +237,20 @@ pub fn read_form(path: &Path) -> FormResult {
                                 .push("\"entry_format\" must be \"inline\" or \"block\"".into()),
                         }
                     }
+                    ("note_source", value @ serde_json::Value::String(_)) => {
+                        match serde_json::from_value(value) {
+                            Ok(source) => result.form.note_source = Some(source),
+                            Err(_) => problems
+                                .push("\"note_source\" must be \"periodic\" or \"daily\"".into()),
+                        }
+                    }
                     (
                         "vault_root"
                         | "use_yesterday_if_today_missing"
                         | "heading"
                         | "duplicate_heading"
-                        | "entry_format",
+                        | "entry_format"
+                        | "note_source",
                         _,
                     ) => {
                         problems.push(format!("\"{key}\" has the wrong type"));
@@ -230,8 +280,13 @@ pub fn read_form(path: &Path) -> FormResult {
     result
 }
 
-/// Headings in the located daily note (today's, else yesterday's) under `vault_root`.
-pub fn list_headings(vault_root: Option<&str>, today: NaiveDate) -> HeadingList {
+/// Headings in the located daily note (today's, else yesterday's) under `vault_root`, using
+/// `note_source`, or the detected plugin if no source has been chosen yet.
+pub fn list_headings(
+    vault_root: Option<&str>,
+    note_source: Option<NoteSource>,
+    today: NaiveDate,
+) -> HeadingList {
     let mut result = HeadingList::default();
     let Some(root) = vault_root.map(Path::new) else {
         return result;
@@ -239,7 +294,27 @@ pub fn list_headings(vault_root: Option<&str>, today: NaiveDate) -> HeadingList 
     if validate_root(root).is_err() {
         return result;
     }
-    let note = match journal_core::locate_daily_note(root, today) {
+    let detected = match journal_core::obsidian::detect_source(root) {
+        Ok(detected) => detected.map(NoteSource::from),
+        Err(detail) => {
+            result.problem = Some(detail.to_string());
+            return result;
+        }
+    };
+    result.detected = detected;
+    let Some(source) = note_source.or(detected) else {
+        result.problem = Some(journal_core::LogError::NoDailyNotesPlugin.to_string());
+        return result;
+    };
+    let resolved = match journal_core::obsidian::resolve_layout(root, source.into()) {
+        Ok(resolved) => resolved,
+        Err(detail) => {
+            result.problem = Some(detail.to_string());
+            return result;
+        }
+    };
+    result.layout = Some(resolved.describe());
+    let note = match journal_core::locate_daily_note(root, &resolved.layout, today) {
         Ok(Some(note)) => note,
         Ok(None) => return result,
         Err(detail) => {
@@ -275,18 +350,27 @@ pub fn save_form(path: &Path, form: &SettingsForm, today: NaiveDate) -> Result<S
         .vault_root
         .as_deref()
         .filter(|root| !root.is_empty())
-        .ok_or_else(|| AppError::new("settings", "Choose a journal folder before saving."))?;
+        .ok_or_else(|| AppError::new("settings", "Choose a vault folder before saving."))?;
     validate_root(Path::new(root)).map_err(|detail| {
         AppError::new(
             "settings",
-            format!("Cannot use {root} as the journal folder: {detail}"),
+            format!("Cannot use {root} as the vault folder: {detail}"),
         )
     })?;
+    let source = form.note_source.ok_or_else(|| {
+        AppError::new(
+            "settings",
+            "Choose where daily notes come from before saving.",
+        )
+    })?;
+    journal_core::obsidian::resolve_layout(Path::new(root), source.into())
+        .map_err(|detail| AppError::new("settings", detail.to_string()))?;
     let heading = journal_core::validate_heading(&form.heading)
         .map_err(|detail| AppError::new("settings", format!("Cannot use this heading: {detail}.")))?
         .unwrap_or_default();
     let config = Config {
         vault_root: PathBuf::from(root),
+        note_source: Some(source),
         heading,
         duplicate_heading: form.duplicate_heading,
         entry_format: form.entry_format,
@@ -318,9 +402,16 @@ impl Config {
         }
     }
 
+    /// Where daily notes live, re-read from the vault's Obsidian settings on every call.
+    pub fn layout(&self) -> Result<journal_core::NoteLayout, AppError> {
+        let source = self.note_source.ok_or_else(note_source_unset)?;
+        Ok(journal_core::obsidian::resolve_layout(&self.vault_root, source.into())?.layout)
+    }
+
     // Inspection failures are displayed as no note; saving reports the underlying error.
     fn note_label(&self, today: NaiveDate) -> Option<NoteLabel> {
-        let note = journal_core::locate_daily_note(&self.vault_root, today).ok()??;
+        let layout = self.layout().ok()?;
+        let note = journal_core::locate_daily_note(&self.vault_root, &layout, today).ok()??;
         Some(NoteLabel {
             name: note.path.file_stem()?.to_string_lossy().into_owned(),
             is_yesterday: note.is_yesterday,
@@ -347,6 +438,42 @@ pub fn set_entry_format(
 }
 
 #[cfg(test)]
+pub mod test_support {
+    use chrono::NaiveDate;
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
+
+    /// Makes `root` an Obsidian vault whose Periodic Notes daily notes use
+    /// `daily/YYYY/YYYY-MM/YYYY-MM-DD`.
+    pub fn fake_vault(root: &Path) {
+        let plugin = root
+            .join(".obsidian")
+            .join("plugins")
+            .join("periodic-notes");
+        fs::create_dir_all(&plugin).unwrap();
+        fs::write(
+            root.join(".obsidian").join("community-plugins.json"),
+            r#"["periodic-notes"]"#,
+        )
+        .unwrap();
+        fs::write(
+            plugin.join("data.json"),
+            r#"{"daily": {"enabled": true, "folder": "daily", "format": "YYYY/YYYY-MM/YYYY-MM-DD"}}"#,
+        )
+        .unwrap();
+    }
+
+    pub fn note_path(root: &Path, date: NaiveDate) -> PathBuf {
+        journal_core::NoteLayout::new("daily", "YYYY/YYYY-MM/YYYY-MM-DD")
+            .unwrap()
+            .path(root, date)
+            .unwrap()
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -362,7 +489,7 @@ mod tests {
         let label = |settings: Settings| settings.note;
         assert_eq!(label(load(&path).unwrap().settings(&path, today())), None);
         let note = |date: NaiveDate| {
-            let note = journal_core::daily_note_path(root.path(), date);
+            let note = test_support::note_path(root.path(), date);
             fs::create_dir_all(note.parent().unwrap()).unwrap();
             fs::write(note, b"# Journal\n").unwrap();
         };
@@ -390,10 +517,14 @@ mod tests {
     }
 
     pub fn write_config(path: &Path, root: &Path) {
+        if root.is_dir() {
+            test_support::fake_vault(root);
+        }
         fs::write(
             path,
             serde_json::to_vec(&serde_json::json!({
-                "vault_root": root
+                "vault_root": root,
+                "note_source": "periodic"
             }))
             .unwrap(),
         )
@@ -471,6 +602,15 @@ mod tests {
         }
     }
 
+    /// A savable form for a fake Periodic Notes vault at `root`.
+    fn valid_form(root: &Path, enabled: bool) -> SettingsForm {
+        test_support::fake_vault(root);
+        SettingsForm {
+            note_source: Some(NoteSource::Periodic),
+            ..form(Some(root), enabled)
+        }
+    }
+
     #[test]
     fn read_form_reports_missing_and_valid_files() {
         let root = tempfile::tempdir().unwrap();
@@ -485,7 +625,7 @@ mod tests {
         set_fallback(&path, true, today()).unwrap();
         let valid = read_form(&path);
         assert!(valid.exists);
-        assert_eq!(valid.form, form(Some(root.path()), true));
+        assert_eq!(valid.form, valid_form(root.path(), true));
         assert_eq!(valid.issue, None);
     }
 
@@ -554,7 +694,7 @@ mod tests {
     fn save_form_creates_the_directory_and_file() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("app").join("config.json");
-        let settings = save_form(&path, &form(Some(root.path()), true), today()).unwrap();
+        let settings = save_form(&path, &valid_form(root.path(), true), today()).unwrap();
         assert!(settings.use_yesterday_if_today_missing);
         assert_eq!(settings.config_path, path.display().to_string());
         let config = load(&path).unwrap();
@@ -568,10 +708,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("config.json");
         fs::write(&path, r#"{"vault_root": "relative", "typo": 1}"#).unwrap();
-        let note = journal_core::daily_note_path(root.path(), today());
+        let note = test_support::note_path(root.path(), today());
         fs::create_dir_all(note.parent().unwrap()).unwrap();
         fs::write(note, b"# Journal\n").unwrap();
-        let settings = save_form(&path, &form(Some(root.path()), false), today()).unwrap();
+        let settings = save_form(&path, &valid_form(root.path(), false), today()).unwrap();
         assert_eq!(
             settings.note,
             Some(NoteLabel {
@@ -592,8 +732,8 @@ mod tests {
         let file = path.display().to_string();
         let missing = root.path().join("missing").display().to_string();
         for (vault_root, detail) in [
-            (None, "Choose a journal folder"),
-            (Some(String::new()), "Choose a journal folder"),
+            (None, "Choose a vault folder"),
+            (Some(String::new()), "Choose a vault folder"),
             (Some("relative".to_string()), "absolute path"),
             (Some(missing), "cannot access vault_root"),
             (Some(file), "existing directory"),
@@ -620,13 +760,13 @@ mod tests {
         let mut readonly = original.clone();
         readonly.set_readonly(true);
         fs::set_permissions(&path, readonly).unwrap();
-        let result = save_form(&path, &form(Some(root.path()), true), today());
+        let result = save_form(&path, &valid_form(root.path(), true), today());
         fs::set_permissions(&path, original).unwrap();
         let error = result.unwrap_err();
         assert_eq!(error.code, "settings");
         assert!(error.message.contains("Could not save settings"));
         assert!(!load(&path).unwrap().use_yesterday_if_today_missing);
-        save_form(&path, &form(Some(root.path()), true), today()).unwrap();
+        save_form(&path, &valid_form(root.path(), true), today()).unwrap();
         assert_eq!(crate::draft::load(&path).unwrap(), "keep me");
     }
 
@@ -733,7 +873,7 @@ mod tests {
     fn save_form_trims_and_validates_the_heading() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("config.json");
-        let mut form = form(Some(root.path()), false);
+        let mut form = valid_form(root.path(), false);
         form.heading = "Journal".into();
         let error = save_form(&path, &form, today()).unwrap_err();
         assert_eq!(error.code, "settings");
@@ -766,7 +906,7 @@ mod tests {
         assert_eq!(saved["entry_format"], "block");
         assert_eq!(read_form(&path).form.entry_format, EntryFormat::Block);
 
-        let mut form = form(Some(root.path()), false);
+        let mut form = valid_form(root.path(), false);
         form.entry_format = EntryFormat::Inline;
         let settings = save_form(&path, &form, today()).unwrap();
         assert_eq!(settings.entry_format, EntryFormat::Inline);
@@ -791,13 +931,24 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().display().to_string();
         let empty = HeadingList::default();
-        assert_eq!(list_headings(None, today()), empty);
-        assert_eq!(list_headings(Some("relative"), today()), empty);
+        assert_eq!(list_headings(None, None, today()), empty);
+        assert_eq!(list_headings(Some("relative"), None, today()), empty);
         let missing = root.path().join("missing").display().to_string();
-        assert_eq!(list_headings(Some(&missing), today()), empty);
-        assert_eq!(list_headings(Some(&dir), today()), empty);
+        assert_eq!(list_headings(Some(&missing), None, today()), empty);
+        let problem = list_headings(Some(&dir), None, today()).problem.unwrap();
+        assert!(problem.contains("not an Obsidian vault"), "{problem}");
+        test_support::fake_vault(root.path());
+        let layout = Some("Periodic Notes: daily/YYYY/YYYY-MM/YYYY-MM-DD".to_string());
+        assert_eq!(
+            list_headings(Some(&dir), None, today()),
+            HeadingList {
+                detected: Some(NoteSource::Periodic),
+                layout: layout.clone(),
+                ..Default::default()
+            }
+        );
         let write = |date: NaiveDate, bytes: &[u8]| {
-            let note = journal_core::daily_note_path(root.path(), date);
+            let note = test_support::note_path(root.path(), date);
             fs::create_dir_all(note.parent().unwrap()).unwrap();
             fs::write(note, bytes).unwrap();
         };
@@ -806,17 +957,100 @@ mod tests {
             b"\xef\xbb\xbf# Yesterday\r\n## Log\r\n",
         );
         assert_eq!(
-            list_headings(Some(&dir), today()),
+            list_headings(Some(&dir), Some(NoteSource::Periodic), today()),
             HeadingList {
                 note: Some("2026-02-28".into()),
                 headings: vec!["# Yesterday".into(), "## Log".into()],
                 problem: None,
+                detected: Some(NoteSource::Periodic),
+                layout,
             }
         );
         write(today(), b"# Journal\n\xff");
-        let invalid = list_headings(Some(&dir), today());
+        let invalid = list_headings(Some(&dir), None, today());
         assert_eq!(invalid.note.as_deref(), Some("2026-03-01"));
         assert!(invalid.headings.is_empty());
         assert!(invalid.problem.unwrap().contains("Could not read headings"));
+    }
+
+    #[test]
+    fn list_headings_reports_disabled_or_missing_plugins() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().display().to_string();
+        test_support::fake_vault(root.path());
+        let daily = list_headings(Some(&dir), Some(NoteSource::Daily), today());
+        assert_eq!(daily.detected, Some(NoteSource::Periodic));
+        assert_eq!(daily.layout, None);
+        assert!(daily.problem.unwrap().contains("Daily notes"));
+        fs::write(root.path().join(".obsidian/community-plugins.json"), "[]").unwrap();
+        let none = list_headings(Some(&dir), None, today());
+        assert_eq!(none.detected, None);
+        assert!(none.problem.unwrap().contains("No daily-notes plugin"));
+        fs::write(
+            root.path().join(".obsidian/core-plugins.json"),
+            r#"{"daily-notes": true}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.path().join(".obsidian/daily-notes.json"),
+            r#"{"folder": "Journal", "format": "YYYY-MM-DD"}"#,
+        )
+        .unwrap();
+        let core = list_headings(Some(&dir), None, today());
+        assert_eq!(core.detected, Some(NoteSource::Daily));
+        assert_eq!(
+            core.layout.as_deref(),
+            Some("Daily notes: Journal/YYYY-MM-DD")
+        );
+        assert_eq!(core.problem, None);
+    }
+
+    #[test]
+    fn note_source_is_required_to_find_notes_but_not_to_load() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.json");
+        test_support::fake_vault(root.path());
+        let note = test_support::note_path(root.path(), today());
+        fs::create_dir_all(note.parent().unwrap()).unwrap();
+        fs::write(&note, b"# Journal\n").unwrap();
+        write_json(&path, serde_json::json!({ "vault_root": root.path() }));
+        let config = load(&path).unwrap();
+        assert_eq!(config.note_source, None);
+        assert_eq!(config.layout().unwrap_err().code, "note_source_unset");
+        assert_eq!(config.settings(&path, today()).note, None);
+        set_fallback(&path, true, today()).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(saved.get("note_source").is_none(), "{saved}");
+        assert_eq!(read_form(&path).form.note_source, None);
+        assert_eq!(read_form(&path).issue, None);
+
+        let mut form = form(Some(root.path()), false);
+        let error = save_form(&path, &form, today()).unwrap_err();
+        assert!(error.message.contains("Choose where daily notes come from"));
+        form.note_source = Some(NoteSource::Daily);
+        let error = save_form(&path, &form, today()).unwrap_err();
+        assert_eq!(error.code, "settings");
+        assert!(error.message.contains("not enabled"), "{}", error.message);
+        assert!(load(&path).unwrap().note_source.is_none());
+        form.note_source = Some(NoteSource::Periodic);
+        let settings = save_form(&path, &form, today()).unwrap();
+        assert_eq!(settings.note.unwrap().name, "2026-03-01");
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["note_source"], "periodic");
+        assert_eq!(
+            read_form(&path).form.note_source,
+            Some(NoteSource::Periodic)
+        );
+
+        for value in [serde_json::json!("auto"), serde_json::json!(true)] {
+            write_json(
+                &path,
+                serde_json::json!({ "vault_root": root.path(), "note_source": value }),
+            );
+            assert!(load(&path).is_err(), "{value}");
+            let result = read_form(&path);
+            assert_eq!(result.form.note_source, None);
+            assert!(result.issue.unwrap().contains("\"note_source\""));
+        }
     }
 }

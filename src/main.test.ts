@@ -13,7 +13,11 @@ const initial: Settings = {
   note: { name: "2026-09-26", is_yesterday: false },
 };
 
-const noHeading = { heading: "", duplicate_heading: "error", entry_format: "inline" } as const;
+const noHeading = {
+  note_source: "periodic", heading: "", duplicate_heading: "error", entry_format: "inline",
+} as const;
+
+const periodicLayout = "Periodic Notes: daily/YYYY/YYYY-MM/YYYY-MM-DD";
 
 const validForm: FormResult = {
   config_path: "/config/config.json",
@@ -29,6 +33,8 @@ const noteHeadings: HeadingList = {
   note: "2026-09-26",
   headings: ["# Journal", "## Daily Log"],
   problem: null,
+  detected: "periodic",
+  layout: periodicLayout,
 };
 
 function mockApi() {
@@ -58,6 +64,7 @@ function mockApi() {
     submit: vi.fn<JournalApi["submit"]>().mockResolvedValue({ note_path: "today.md" }),
     exit: vi.fn<JournalApi["exit"]>().mockResolvedValue(undefined),
     startDragging: vi.fn<JournalApi["startDragging"]>().mockResolvedValue(undefined),
+    setWindowHeight: vi.fn<JournalApi["setWindowHeight"]>().mockResolvedValue(undefined),
   };
 }
 
@@ -93,6 +100,8 @@ async function setup(api = mockApi()) {
     choose: root.querySelector<HTMLButtonElement>("#settings-choose")!,
     dialogFallback: root.querySelector<HTMLInputElement>("#settings-fallback")!,
     heading: root.querySelector<HTMLSelectElement>("#settings-heading")!,
+    source: root.querySelector<HTMLSelectElement>("#settings-source")!,
+    sourceNote: root.querySelector<HTMLParagraphElement>("#settings-source-note")!,
     headingNote: root.querySelector<HTMLParagraphElement>("#settings-heading-note")!,
     duplicates: root.querySelector<HTMLSelectElement>("#settings-duplicates")!,
     entryFormat: root.querySelector<HTMLSelectElement>("#settings-entry-format")!,
@@ -415,6 +424,88 @@ describe("minimal journal window", () => {
     expect(api.submit).toHaveBeenCalledExactlyOnceWith("draft");
   });
 
+  it("shows only \"Config error!\" for configuration problems", async () => {
+    const api = mockApi();
+    const detailed = { code: "configuration", message: "Cannot use config.json: long help" };
+    api.loadDraft.mockRejectedValue({ code: "draft_io", message: "Draft unreadable." });
+    api.loadSettings.mockRejectedValue(detailed);
+    const { entry, message, checkbox } = await setup(api);
+    expect(message.textContent).toBe(
+      "Draft unreadable. Press Enter to retry loading it.\nConfig error!",
+    );
+    api.loadDraft.mockResolvedValue("draft");
+    key(entry, "Enter");
+    await flush();
+    for (const code of [
+      "configuration", "note_source_unset", "not_a_vault", "no_daily_notes_plugin",
+      "plugin_disabled", "plugin_settings", "date_format", "note_path",
+    ]) {
+      api.loadSettings.mockRejectedValueOnce({ code, message: "details" });
+      key(entry, "Enter");
+      await flush();
+      expect(message.textContent, code).toBe("Config error!");
+      expect(message.className).toBe("error");
+    }
+    api.loadSettings.mockResolvedValue(initial);
+    api.submit.mockRejectedValueOnce({
+      code: "today_missing", message: "Today's daily note is missing.",
+    });
+    key(entry, "Enter");
+    await flush();
+    expect(message.textContent).toBe("Today's daily note is missing.");
+    api.submit.mockRejectedValueOnce({ code: "not_a_vault", message: "details" });
+    key(entry, "Enter");
+    await flush();
+    expect(message.textContent).toBe("Config error!");
+    api.setFallback.mockRejectedValueOnce(detailed);
+    checkbox.checked = true;
+    checkbox.dispatchEvent(new Event("change"));
+    await flush();
+    expect(message.textContent).toBe("Config error!");
+  });
+
+  it("grows the window to fit the settings dialog and restores it on close", async () => {
+    const api = mockApi();
+    const height = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(410);
+    try {
+      const { dialog, journal, cancelButton, gear } = await openSettings(api);
+      expect(dialog.hidden).toBe(false);
+      expect(journal.hidden).toBe(true);
+      expect(api.setWindowHeight).toHaveBeenCalledExactlyOnceWith(412);
+      cancelButton.click();
+      await flush();
+      expect(journal.hidden).toBe(false);
+      expect(api.setWindowHeight).toHaveBeenLastCalledWith(300);
+      expect(api.setWindowHeight).toHaveBeenCalledTimes(2);
+      height.mockReturnValue(120);
+      gear.click();
+      await flush();
+      expect(api.setWindowHeight).toHaveBeenCalledTimes(2);
+      cancelButton.click();
+      await flush();
+      expect(api.setWindowHeight).toHaveBeenCalledTimes(2);
+    } finally {
+      height.mockRestore();
+    }
+  });
+
+  it("keeps working if the window cannot be resized", async () => {
+    const api = mockApi();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const height = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(500);
+    api.setWindowHeight.mockRejectedValue(new Error("denied"));
+    try {
+      const { dialog, dialogMessage } = await openSettings(api);
+      await flush();
+      expect(dialog.hidden).toBe(false);
+      expect(dialogMessage.textContent).toBe("");
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      height.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
   it("never resubmits after a successful save if exiting fails", async () => {
     const api = mockApi();
     api.exit.mockRejectedValue(new Error("Cannot exit"));
@@ -510,7 +601,8 @@ describe("minimal journal window", () => {
     const api = mockApi();
     api.readSettingsForm.mockResolvedValue({
       ...validForm, form: {
-        vault_root: "/vault", heading: "## Daily Log", duplicate_heading: "last",
+        vault_root: "/vault", note_source: "daily", heading: "## Daily Log",
+        duplicate_heading: "last",
         entry_format: "block", use_yesterday_if_today_missing: true,
       },
     });
@@ -703,7 +795,7 @@ describe("minimal journal window", () => {
       form: { ...validForm.form, heading: "## Daily Log", duplicate_heading: "last" },
     });
     const { heading, duplicates, headingNote } = await openSettings(api);
-    expect(api.listHeadings).toHaveBeenCalledExactlyOnceWith("/vault");
+    expect(api.listHeadings).toHaveBeenCalledExactlyOnceWith("/vault", "periodic");
     expect([...heading.options].map((item) => [item.value, item.textContent])).toEqual([
       ["", "End of file"], ["# Journal", "# Journal"], ["## Daily Log", "## Daily Log"],
     ]);
@@ -735,7 +827,7 @@ describe("minimal journal window", () => {
 
   it("offers only End of file without a daily note or folder", async () => {
     const api = mockApi();
-    api.listHeadings.mockResolvedValue({ note: null, headings: [], problem: null });
+    api.listHeadings.mockResolvedValue({ ...noteHeadings, note: null, headings: [], problem: null });
     api.readSettingsForm.mockResolvedValue({
       ...validForm, form: { ...validForm.form, heading: "# Journal" },
     });
@@ -751,19 +843,19 @@ describe("minimal journal window", () => {
       issue: null,
     });
     const view = await openSettings(api);
-    expect(api.listHeadings).toHaveBeenLastCalledWith(null);
-    expect(view.headingNote.textContent).toBe("Choose a journal folder to list its headings.");
+    expect(api.listHeadings).toHaveBeenLastCalledWith(null, "periodic");
+    expect(view.headingNote.textContent).toBe("Choose a vault folder to list its headings.");
   });
 
   it("rescans headings after choosing a different folder", async () => {
     const api = mockApi();
     const { heading, choose, headingNote } = await openSettings(api);
     api.listHeadings.mockResolvedValue({
-      note: "2026-09-25", headings: ["## Elsewhere"], problem: null,
+      ...noteHeadings, note: "2026-09-25", headings: ["## Elsewhere"], problem: null,
     });
     choose.click();
     await flush();
-    expect(api.listHeadings).toHaveBeenLastCalledWith("/picked");
+    expect(api.listHeadings).toHaveBeenLastCalledWith("/picked", "periodic");
     expect([...heading.options].map((item) => item.value)).toEqual(["", "## Elsewhere"]);
     expect(headingNote.textContent).toBe("Headings from 2026-09-25.");
     api.pickVaultFolder.mockResolvedValue(null);
@@ -778,7 +870,7 @@ describe("minimal journal window", () => {
       ...validForm, form: { ...validForm.form, heading: "# Journal" },
     });
     api.listHeadings.mockResolvedValue({
-      note: "2026-09-26", headings: [], problem: "Could not read headings: bad UTF-8",
+      ...noteHeadings, note: "2026-09-26", headings: [], problem: "Could not read headings: bad UTF-8",
     });
     const { heading, headingNote } = await openSettings(api);
     expect(heading.value).toBe("# Journal");
@@ -805,8 +897,8 @@ describe("minimal journal window", () => {
     saveButton.click();
     await flush();
     expect(api.saveSettings).toHaveBeenCalledExactlyOnceWith({
-      vault_root: "/vault", heading: "## Daily Log", duplicate_heading: "first",
-      entry_format: "inline", use_yesterday_if_today_missing: false,
+      vault_root: "/vault", note_source: "periodic", heading: "## Daily Log",
+      duplicate_heading: "first", entry_format: "inline", use_yesterday_if_today_missing: false,
     });
     expect(document.activeElement).toBe(entry);
   });
@@ -827,10 +919,89 @@ describe("minimal journal window", () => {
     expect(api.setEntryFormat).not.toHaveBeenCalled();
   });
 
+  it("shows the saved note source and its pattern", async () => {
+    const api = mockApi();
+    const { source, sourceNote } = await openSettings(api);
+    expect([...source.options].map((item) => item.value)).toEqual(["", "periodic", "daily"]);
+    expect(source.value).toBe("periodic");
+    expect(sourceNote.textContent).toBe(periodicLayout);
+    expect(sourceNote.className).toBe("");
+  });
+
+  it("pre-selects the detected plugin when no source is saved yet", async () => {
+    const api = mockApi();
+    api.readSettingsForm.mockResolvedValue({
+      ...validForm, form: { ...validForm.form, note_source: null },
+    });
+    const { source, sourceNote, saveButton } = await openSettings(api);
+    expect(api.listHeadings).toHaveBeenCalledExactlyOnceWith("/vault", null);
+    expect(source.value).toBe("periodic");
+    expect(sourceNote.textContent).toBe(`Detected ${periodicLayout}. Save to use it.`);
+    expect(sourceNote.className).toBe("notice");
+    expect(saveButton.disabled).toBe(false);
+    saveButton.click();
+    await flush();
+    expect(api.listHeadings).toHaveBeenCalledOnce();
+    expect(api.saveSettings).toHaveBeenCalledExactlyOnceWith(validForm.form);
+  });
+
+  it("explains a missing plugin and blocks saving until a source is chosen", async () => {
+    const api = mockApi();
+    const problem = "No daily-notes plugin is enabled in this vault.";
+    api.readSettingsForm.mockResolvedValue({
+      ...validForm, form: { ...validForm.form, note_source: null, heading: "# Journal" },
+    });
+    api.listHeadings.mockResolvedValue({
+      note: null, headings: [], problem, detected: null, layout: null,
+    });
+    const { source, sourceNote, saveButton, heading, headingNote } = await openSettings(api);
+    expect(source.value).toBe("");
+    expect(sourceNote.textContent).toBe(problem);
+    expect(sourceNote.className).toBe("error");
+    expect(headingNote.textContent).toBe("");
+    expect(heading.value).toBe("# Journal");
+    expect(saveButton.disabled).toBe(true);
+  });
+
+  it("rescans with the chosen source and saves it", async () => {
+    const api = mockApi();
+    const { source, sourceNote, saveButton, heading } = await openSettings(api);
+    api.listHeadings.mockResolvedValue({
+      ...noteHeadings, headings: ["## Core"], layout: "Daily notes: YYYY-MM-DD",
+    });
+    source.value = "daily";
+    source.dispatchEvent(new Event("change"));
+    await flush();
+    expect(api.listHeadings).toHaveBeenLastCalledWith("/vault", "daily");
+    expect(sourceNote.textContent).toBe("Daily notes: YYYY-MM-DD");
+    expect([...heading.options].map((item) => item.value)).toEqual(["", "## Core"]);
+    saveButton.click();
+    await flush();
+    expect(api.saveSettings).toHaveBeenCalledExactlyOnceWith({
+      ...validForm.form, note_source: "daily",
+    });
+  });
+
+  it("shows a source problem without dropping the saved heading", async () => {
+    const api = mockApi();
+    api.readSettingsForm.mockResolvedValue({
+      ...validForm, form: { ...validForm.form, note_source: "daily", heading: "# Journal" },
+    });
+    api.listHeadings.mockResolvedValue({
+      note: null, headings: [], problem: "The Daily notes core plugin is not enabled.",
+      detected: "periodic", layout: null,
+    });
+    const { source, sourceNote, heading } = await openSettings(api);
+    expect(source.value).toBe("daily");
+    expect(sourceNote.textContent).toBe("The Daily notes core plugin is not enabled.");
+    expect(sourceNote.className).toBe("error");
+    expect(heading.value).toBe("# Journal");
+  });
+
   it("renders note headings as text", async () => {
     const api = mockApi();
     api.listHeadings.mockResolvedValue({
-      note: "<i>n</i>", headings: ["# <b>x</b>"], problem: null,
+      ...noteHeadings, note: "<i>n</i>", headings: ["# <b>x</b>"], problem: null,
     });
     const { heading, headingNote, dialog } = await openSettings(api);
     expect(heading.options[1].textContent).toBe("# <b>x</b>");

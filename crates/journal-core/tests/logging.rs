@@ -1,10 +1,10 @@
 use chrono::{FixedOffset, NaiveDate, TimeZone};
 use journal_core::{
-    append_entry, atomic_write, build_updated_note, daily_note_path, format_clock_time,
-    format_timestamp, list_headings, locate_daily_note, render_entry, select_daily_note,
-    trim_entry, validate_heading, DuplicateHeading,
+    append_entry, atomic_write, build_updated_note, format_clock_time, format_timestamp,
+    list_headings, locate_daily_note, render_entry, select_daily_note, trim_entry,
+    validate_heading, DuplicateHeading,
     EntryFormat::{self, Block, Inline},
-    LocatedNote, LogError, Placement,
+    LocatedNote, LogError, NoteLayout, Placement,
 };
 use std::{fs, path::Path};
 
@@ -23,6 +23,14 @@ fn journal() -> Placement {
     under("# Journal", DuplicateHeading::Error)
 }
 
+fn layout() -> NoteLayout {
+    NoteLayout::new("daily", "YYYY/YYYY-MM/YYYY-MM-DD").unwrap()
+}
+
+fn daily_note_path(root: &Path, day: NaiveDate) -> std::path::PathBuf {
+    layout().path(root, day).unwrap()
+}
+
 fn note(root: &Path, day: NaiveDate, bytes: &[u8]) -> std::path::PathBuf {
     let path = daily_note_path(root, day);
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -39,22 +47,22 @@ fn selection_policy_and_calendar_boundaries() {
     ] {
         let root = tempfile::tempdir().unwrap();
         assert!(matches!(
-            select_daily_note(root.path(), today, true),
+            select_daily_note(root.path(), &layout(), today, true),
             Err(LogError::NotesMissing { .. })
         ));
         let previous = note(root.path(), yesterday, b"# Journal\n");
         assert!(matches!(
-            select_daily_note(root.path(), today, false),
+            select_daily_note(root.path(), &layout(), today, false),
             Err(LogError::TodayMissing { .. })
         ));
         assert_eq!(
-            select_daily_note(root.path(), today, true).unwrap(),
+            select_daily_note(root.path(), &layout(), today, true).unwrap(),
             previous
         );
         let current = note(root.path(), today, b"# Journal\n");
         for fallback in [false, true] {
             assert_eq!(
-                select_daily_note(root.path(), today, fallback).unwrap(),
+                select_daily_note(root.path(), &layout(), today, fallback).unwrap(),
                 current
             );
         }
@@ -68,12 +76,18 @@ fn location_prefers_today_then_yesterday_and_ignores_directories() {
         (date(2026, 3, 1), date(2026, 2, 28)),
     ] {
         let root = tempfile::tempdir().unwrap();
-        assert_eq!(locate_daily_note(root.path(), today).unwrap(), None);
+        assert_eq!(
+            locate_daily_note(root.path(), &layout(), today).unwrap(),
+            None
+        );
         fs::create_dir_all(daily_note_path(root.path(), today)).unwrap();
-        assert_eq!(locate_daily_note(root.path(), today).unwrap(), None);
+        assert_eq!(
+            locate_daily_note(root.path(), &layout(), today).unwrap(),
+            None
+        );
         let previous = note(root.path(), yesterday, b"# Journal\n");
         assert_eq!(
-            locate_daily_note(root.path(), today).unwrap(),
+            locate_daily_note(root.path(), &layout(), today).unwrap(),
             Some(LocatedNote {
                 path: previous,
                 is_yesterday: true,
@@ -82,7 +96,7 @@ fn location_prefers_today_then_yesterday_and_ignores_directories() {
         fs::remove_dir(daily_note_path(root.path(), today)).unwrap();
         let current = note(root.path(), today, b"# Journal\n");
         assert_eq!(
-            locate_daily_note(root.path(), today).unwrap(),
+            locate_daily_note(root.path(), &layout(), today).unwrap(),
             Some(LocatedNote {
                 path: current,
                 is_yesterday: false,
@@ -324,6 +338,7 @@ fn append_is_exact_and_uses_invocation_date_even_near_midnight() {
     let previous = note(root.path(), date(2025, 12, 31), b"# Journal\n");
     let result = append_entry(
         root.path(),
+        &layout(),
         &moment,
         true,
         &journal(),
@@ -349,18 +364,42 @@ fn invalid_entries_and_notes_do_not_write() {
     let path = note(root.path(), moment.date_naive(), b"no journal");
     for text in ["", " \t\n", "\u{1f}"] {
         assert!(matches!(
-            append_entry(root.path(), &moment, false, &journal(), Inline, text),
+            append_entry(
+                root.path(),
+                &layout(),
+                &moment,
+                false,
+                &journal(),
+                Inline,
+                text
+            ),
             Err(LogError::EmptyEntry)
         ));
     }
     assert!(matches!(
-        append_entry(root.path(), &moment, false, &journal(), Inline, "entry"),
+        append_entry(
+            root.path(),
+            &layout(),
+            &moment,
+            false,
+            &journal(),
+            Inline,
+            "entry"
+        ),
         Err(LogError::HeadingMissing { .. })
     ));
     assert_eq!(fs::read(&path).unwrap(), b"no journal");
     fs::write(&path, b"# Journal\n\xff").unwrap();
     assert!(matches!(
-        append_entry(root.path(), &moment, false, &journal(), Inline, "entry"),
+        append_entry(
+            root.path(),
+            &layout(),
+            &moment,
+            false,
+            &journal(),
+            Inline,
+            "entry"
+        ),
         Err(LogError::Encoding(_))
     ));
     assert_eq!(fs::read(&path).unwrap(), b"# Journal\n\xff");
@@ -467,7 +506,16 @@ fn block_entries_are_placed_like_inline_entries() {
     let moment = block_at(9, 7);
     let path = note(root.path(), moment.date_naive(), b"");
     let append = |text: &str, placement: &Placement| {
-        append_entry(root.path(), &moment, false, placement, Block, text).unwrap()
+        append_entry(
+            root.path(),
+            &layout(),
+            &moment,
+            false,
+            placement,
+            Block,
+            text,
+        )
+        .unwrap()
     };
     append(" first ", &Placement::default());
     assert_eq!(fs::read(&path).unwrap(), b"**9:07am**\nfirst\n\n---\n");

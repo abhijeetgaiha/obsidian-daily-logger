@@ -1,11 +1,12 @@
 import {
   errorMessage, type DuplicateHeading, type EntryFormat, type FormResult, type JournalApi,
-  type Settings, type SettingsForm,
+  type NoteSource, type Settings, type SettingsForm,
 } from "./api";
 
 interface FieldContext {
   form(): SettingsForm;
-  update(change: Partial<SettingsForm>): void;
+  /** Changing the folder or note source refreshes dependent data unless `refresh` is false. */
+  update(change: Partial<SettingsForm>, options?: { refresh?: boolean }): void;
   run(task: () => Promise<void>): Promise<void>;
 }
 
@@ -22,7 +23,7 @@ function folderField(api: JournalApi, context: FieldContext): Field {
   const element = document.createElement("div");
   element.className = "setting";
   element.innerHTML = `
-    <span class="setting-label" id="settings-folder-label">Journal folder</span>
+    <span class="setting-label" id="settings-folder-label">Obsidian vault</span>
     <div class="folder">
       <span id="settings-folder" aria-labelledby="settings-folder-label"></span>
       <button id="settings-choose" type="button">Choose…</button>
@@ -47,22 +48,36 @@ function folderField(api: JournalApi, context: FieldContext): Field {
   };
 }
 
-function headingField(api: JournalApi, context: FieldContext): Field {
+// The note source and heading share one lookup, because headings come from the note it finds.
+function noteField(api: JournalApi, context: FieldContext): Field {
   const element = document.createElement("div");
-  element.className = "setting";
+  element.className = "setting-group";
   element.innerHTML = `
-    <label class="setting-label" for="settings-heading">Insert under heading</label>
-    <select id="settings-heading" aria-describedby="settings-heading-note"></select>
-    <p id="settings-heading-note"></p>
-    <label class="sub-setting">
-      If the heading appears more than once
-      <select id="settings-duplicates">
-        <option value="error">Show an error</option>
-        <option value="first">Use the first</option>
-        <option value="last">Use the last</option>
+    <div class="setting">
+      <label class="setting-label" for="settings-source">Daily notes from</label>
+      <select id="settings-source" aria-describedby="settings-source-note">
+        <option value="" disabled>Choose a plugin</option>
+        <option value="periodic">Periodic Notes</option>
+        <option value="daily">Daily notes (core plugin)</option>
       </select>
-    </label>
+      <p id="settings-source-note"></p>
+    </div>
+    <div class="setting">
+      <label class="setting-label" for="settings-heading">Insert under heading</label>
+      <select id="settings-heading" aria-describedby="settings-heading-note"></select>
+      <p id="settings-heading-note"></p>
+      <label class="sub-setting">
+        If the heading appears more than once
+        <select id="settings-duplicates">
+          <option value="error">Show an error</option>
+          <option value="first">Use the first</option>
+          <option value="last">Use the last</option>
+        </select>
+      </label>
+    </div>
   `;
+  const sourceSelect = element.querySelector<HTMLSelectElement>("#settings-source")!;
+  const sourceNote = element.querySelector<HTMLParagraphElement>("#settings-source-note")!;
   const headingSelect = element.querySelector<HTMLSelectElement>("#settings-heading")!;
   const note = element.querySelector<HTMLParagraphElement>("#settings-heading-note")!;
   const duplicates = element.querySelector<HTMLSelectElement>("#settings-duplicates")!;
@@ -85,6 +100,18 @@ function headingField(api: JournalApi, context: FieldContext): Field {
     note.className = kind;
   }
 
+  function setSourceNote(text: string, kind: "" | "notice" | "error" = "") {
+    sourceNote.textContent = text;
+    sourceNote.className = kind;
+  }
+
+  const onSourceChange = () => {
+    // Read before run() re-renders the select from the form.
+    const note_source = sourceSelect.value as NoteSource;
+    void context.run(async () => context.update({ note_source }));
+  };
+  sourceSelect.addEventListener("change", onSourceChange);
+
   const onHeadingChange = () => context.update({ heading: headingSelect.value });
   const onDuplicatesChange = () => context.update({
     duplicate_heading: duplicates.value as DuplicateHeading,
@@ -95,6 +122,8 @@ function headingField(api: JournalApi, context: FieldContext): Field {
   return {
     element,
     render(form, disabled) {
+      sourceSelect.value = form.note_source ?? "";
+      sourceSelect.disabled = disabled;
       // Keep an unverified saved heading selectable until the note has been scanned.
       if (![...headingSelect.options].some((item) => item.value === form.heading)) {
         headingSelect.append(option(form.heading, form.heading));
@@ -105,15 +134,29 @@ function headingField(api: JournalApi, context: FieldContext): Field {
       duplicates.disabled = disabled || form.heading === "";
     },
     async refresh() {
-      const { vault_root: root } = context.form();
+      const { vault_root: root, note_source: source } = context.form();
       let list;
       try {
-        list = await api.listHeadings(root);
+        list = await api.listHeadings(root, source);
       } catch (error) {
+        setSourceNote("");
         setNote(`Could not list headings: ${errorMessage(error)}`, "error");
         return;
       }
       setOptions(list.headings);
+      if (source === null && list.detected !== null) {
+        // The lookup already used the detected plugin, so no second refresh is needed.
+        context.update({ note_source: list.detected }, { refresh: false });
+        setSourceNote(`Detected ${list.layout ?? list.detected}. Save to use it.`, "notice");
+      } else {
+        setSourceNote(list.layout ?? "");
+      }
+      if (list.layout === null && list.problem !== null) {
+        setSourceNote(list.problem, "error");
+        setNote("");
+        context.update({});
+        return;
+      }
       if (list.problem !== null) {
         setNote(list.problem, "error");
         context.update({});
@@ -121,7 +164,7 @@ function headingField(api: JournalApi, context: FieldContext): Field {
       }
       if (list.note === null) {
         setNote(root === null
-          ? "Choose a journal folder to list its headings."
+          ? "Choose a vault folder to list its headings."
           : "No daily note for today or yesterday; only End of file is available.");
       } else {
         setNote(`Headings from ${list.note}.`);
@@ -138,6 +181,7 @@ function headingField(api: JournalApi, context: FieldContext): Field {
       }
     },
     destroy() {
+      sourceSelect.removeEventListener("change", onSourceChange);
       headingSelect.removeEventListener("change", onHeadingChange);
       duplicates.removeEventListener("change", onDuplicatesChange);
     },
@@ -187,11 +231,13 @@ function fallbackField(_api: JournalApi, context: FieldContext): Field {
   };
 }
 
-const fieldFactories = [folderField, headingField, entryFormatField, fallbackField];
+const fieldFactories = [folderField, noteField, entryFormatField, fallbackField];
 
 export interface SettingsHooks {
   onSaved(settings: Settings): void;
   onClose(): void;
+  /** Reports the window height, in CSS pixels, that shows the whole dialog while it is open. */
+  onResize?(height: number): void;
 }
 
 export interface SettingsDialog {
@@ -211,7 +257,7 @@ export function mountSettingsDialog(
   overlay.innerHTML = `
     <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title"
       aria-describedby="settings-issue">
-      <h2 id="settings-title">Settings</h2>
+      <h2 id="settings-title" data-tauri-drag-region>Settings</h2>
       <p id="settings-issue"></p>
       <div id="settings-fields"></div>
       <p id="settings-message" role="status" aria-live="polite"></p>
@@ -223,12 +269,14 @@ export function mountSettingsDialog(
   `;
   host.append(overlay);
   const issue = overlay.querySelector<HTMLParagraphElement>("#settings-issue")!;
+  const dialogBox = overlay.querySelector<HTMLDivElement>(".dialog")!;
   const fieldsHost = overlay.querySelector<HTMLDivElement>("#settings-fields")!;
   const message = overlay.querySelector<HTMLParagraphElement>("#settings-message")!;
   const cancelButton = overlay.querySelector<HTMLButtonElement>("#settings-cancel")!;
   const saveButton = overlay.querySelector<HTMLButtonElement>("#settings-save")!;
   let form: SettingsForm = {
     vault_root: null,
+    note_source: null,
     heading: "",
     duplicate_heading: "error",
     entry_format: "inline",
@@ -242,8 +290,10 @@ export function mountSettingsDialog(
     overlay.hidden = !open;
     fields.forEach((field) => field.render(form, busy));
     cancelButton.disabled = busy;
-    saveButton.disabled = busy || form.vault_root === null;
+    saveButton.disabled = busy || form.vault_root === null || form.note_source === null;
     overlay.setAttribute("aria-busy", String(busy));
+    // The overlay's 1px top and bottom borders frame the window around the dialog.
+    if (open) hooks.onResize?.(dialogBox.scrollHeight + 2);
   }
 
   async function run(task: () => Promise<void>) {
@@ -269,10 +319,11 @@ export function mountSettingsDialog(
 
   const context: FieldContext = {
     form: () => form,
-    update(change) {
-      if (change.vault_root !== undefined && change.vault_root !== form.vault_root) {
-        refreshNeeded = true;
-      }
+    update(change, options) {
+      const changed = (["vault_root", "note_source"] as const).some(
+        (key) => change[key] !== undefined && change[key] !== form[key],
+      );
+      if (changed && options?.refresh !== false) refreshNeeded = true;
       form = { ...form, ...change };
       render();
     },

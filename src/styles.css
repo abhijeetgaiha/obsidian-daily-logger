@@ -133,14 +133,16 @@ input { accent-color: #537a99; }
   position: fixed;
   inset: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 8px 16px;
-  background: rgb(0 0 0 / 0.25);
+  align-items: flex-start;
+  border: 1px solid #b8b8b8;
+  background: #faf9f6;
 }
 
 .overlay[hidden] { display: none; }
 
+#journal[hidden] { display: none; }
+
+/* While open, the dialog is the whole window, which grows to fit it. */
 .dialog {
   display: flex;
   flex-direction: column;
@@ -148,15 +150,11 @@ input { accent-color: #537a99; }
   width: 100%;
   max-height: 100%;
   overflow: auto;
-  padding: 10px 14px;
-  border: 1px solid #b8b8b8;
-  border-radius: 6px;
+  padding: 10px 16px 12px;
   font-size: 12px;
-  background: #faf9f6;
-  box-shadow: 0 4px 16px rgb(0 0 0 / 0.2);
 }
 
-.dialog h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.dialog h2 { margin: 0; font-size: 14px; font-weight: 600; cursor: move; user-select: none; }
 
 .dialog p {
   margin: 0;
@@ -166,7 +164,8 @@ input { accent-color: #537a99; }
 
 .dialog p:empty { display: none; }
 
-#settings-fields {
+#settings-fields,
+.setting-group {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -202,9 +201,12 @@ input { accent-color: #537a99; }
 .dialog select { font: inherit; }
 
 #settings-heading { width: 100%; max-width: 100%; }
-#settings-heading-note { margin-top: 2px; opacity: 0.75; }
-#settings-heading-note.notice { opacity: 1; color: #8a5a00; }
-#settings-heading-note.error { opacity: 1; }
+#settings-heading-note,
+#settings-source-note { margin-top: 2px; opacity: 0.75; }
+#settings-heading-note.notice,
+#settings-source-note.notice { opacity: 1; color: #8a5a00; }
+#settings-heading-note.error,
+#settings-source-note.error { opacity: 1; }
 
 .sub-setting {
   display: flex;
@@ -217,7 +219,8 @@ input { accent-color: #537a99; }
 @media (prefers-color-scheme: dark) {
   :root { color: #efefec; background: #242523; }
   #app { border-color: #626460; }
-  .dialog { border-color: #626460; background: #2d2e2c; }
-  #settings-heading-note.notice { color: #f0c36b; }
+  .overlay { border-color: #626460; background: #242523; }
+  #settings-heading-note.notice,
+  #settings-source-note.notice { color: #f0c36b; }
   .error { color: #ffaaaa; }
 }

@@ -1,5 +1,5 @@
 use crate::{
-    config::{self, EntryFormat, FormResult, HeadingList, Settings, SettingsForm},
+    config::{self, EntryFormat, FormResult, HeadingList, NoteSource, Settings, SettingsForm},
     draft,
     error::AppError,
 };
@@ -114,8 +114,10 @@ impl Session {
     ) -> Result<SavedEntry, AppError> {
         self.check_writable()?;
         let config = config::load(path)?;
+        let layout = config.layout()?;
         let note = journal_core::append_entry(
             &config.vault_root,
+            &layout,
             moment,
             config.use_yesterday_if_today_missing,
             &config.placement(),
@@ -202,10 +204,15 @@ pub async fn read_settings_form(state: State<'_, AppState>) -> Result<FormResult
 pub async fn list_headings(
     state: State<'_, AppState>,
     vault_root: Option<String>,
+    note_source: Option<NoteSource>,
 ) -> Result<HeadingList, AppError> {
     let today = Local::now().date_naive();
     operate(&state, move |_, _| {
-        Ok(config::list_headings(vault_root.as_deref(), today))
+        Ok(config::list_headings(
+            vault_root.as_deref(),
+            note_source,
+            today,
+        ))
     })
     .await
 }
@@ -223,7 +230,7 @@ pub async fn pick_vault_folder(
             .dialog()
             .file()
             .set_parent(&window)
-            .set_title("Choose journal folder");
+            .set_title("Choose Obsidian vault folder");
         if let Some(directory) = current.map(PathBuf::from).filter(|path| path.is_dir()) {
             dialog = dialog.set_directory(directory);
         }
@@ -332,19 +339,21 @@ mod tests {
     #[test]
     fn save_reloads_configuration_and_cannot_append_twice() {
         let root = tempfile::tempdir().unwrap();
+        config::test_support::fake_vault(root.path());
         let path = root.path().join("config.json");
         let moment = FixedOffset::east_opt(0)
             .unwrap()
             .with_ymd_and_hms(2026, 9, 22, 1, 2, 0)
             .unwrap();
         let note =
-            journal_core::daily_note_path(root.path(), moment.date_naive().pred_opt().unwrap());
+            config::test_support::note_path(root.path(), moment.date_naive().pred_opt().unwrap());
         fs::create_dir_all(note.parent().unwrap()).unwrap();
         fs::write(&note, b"# Journal\n").unwrap();
         fs::write(
             &path,
             serde_json::to_vec(&serde_json::json!({
-                "vault_root": root.path()
+                "vault_root": root.path(),
+                "note_source": "periodic"
             }))
             .unwrap(),
         )
@@ -383,6 +392,7 @@ mod tests {
     #[test]
     fn escape_persists_before_exit_and_storage_errors_block_exit() {
         let root = tempfile::tempdir().unwrap();
+        config::test_support::fake_vault(root.path());
         let config = root.path().join("config.json");
         let mut session = Session::default();
         session
@@ -411,10 +421,12 @@ mod tests {
     #[test]
     fn settings_cannot_be_saved_after_an_entry_is_logged_or_while_exiting() {
         let root = tempfile::tempdir().unwrap();
+        config::test_support::fake_vault(root.path());
         let path = root.path().join("config.json");
         let today = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
         let form = SettingsForm {
             vault_root: Some(root.path().display().to_string()),
+            note_source: Some(NoteSource::Periodic),
             use_yesterday_if_today_missing: false,
             ..Default::default()
         };
@@ -438,16 +450,18 @@ mod tests {
     #[test]
     fn save_inserts_under_the_configured_heading() {
         let root = tempfile::tempdir().unwrap();
+        config::test_support::fake_vault(root.path());
         let path = root.path().join("config.json");
         let moment = FixedOffset::east_opt(0)
             .unwrap()
             .with_ymd_and_hms(2026, 9, 22, 13, 5, 0)
             .unwrap();
-        let note = journal_core::daily_note_path(root.path(), moment.date_naive());
+        let note = config::test_support::note_path(root.path(), moment.date_naive());
         fs::create_dir_all(note.parent().unwrap()).unwrap();
         fs::write(&note, b"# Day\n## Log\nold\n### Later\n").unwrap();
         let mut form = SettingsForm {
             vault_root: Some(root.path().display().to_string()),
+            note_source: Some(NoteSource::Periodic),
             heading: "## Missing".into(),
             ..Default::default()
         };
@@ -469,16 +483,18 @@ mod tests {
     #[test]
     fn save_uses_the_configured_block_format() {
         let root = tempfile::tempdir().unwrap();
+        config::test_support::fake_vault(root.path());
         let path = root.path().join("config.json");
         let moment = FixedOffset::east_opt(0)
             .unwrap()
             .with_ymd_and_hms(2026, 9, 22, 13, 5, 0)
             .unwrap();
-        let note = journal_core::daily_note_path(root.path(), moment.date_naive());
+        let note = config::test_support::note_path(root.path(), moment.date_naive());
         fs::create_dir_all(note.parent().unwrap()).unwrap();
         fs::write(&note, b"# Log\n").unwrap();
         let form = SettingsForm {
             vault_root: Some(root.path().display().to_string()),
+            note_source: Some(NoteSource::Periodic),
             heading: "# Log".into(),
             entry_format: EntryFormat::Block,
             ..Default::default()
@@ -494,6 +510,7 @@ mod tests {
     #[test]
     fn autosave_writes_and_clears_the_draft_until_the_session_ends() {
         let root = tempfile::tempdir().unwrap();
+        config::test_support::fake_vault(root.path());
         let path = root.path().join("config.json");
         let mut session = Session::default();
         session.save_draft(&path, "  partial\nline ").unwrap();

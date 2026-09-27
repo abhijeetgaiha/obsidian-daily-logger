@@ -1,4 +1,6 @@
-import { errorMessage, type JournalApi, type NoteLabel, type Settings } from "./api";
+import {
+  errorMessage, isConfigError, WINDOW_HEIGHT, type JournalApi, type NoteLabel, type Settings,
+} from "./api";
 import { createAutosave } from "./autosave";
 import { mountSettingsDialog } from "./settings";
 
@@ -80,6 +82,13 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
       showError(autosaveError);
     },
   });
+  let windowHeight = WINDOW_HEIGHT;
+  function fitWindow(height: number) {
+    if (height === windowHeight) return;
+    windowHeight = height;
+    // If resizing fails, the dialog still scrolls inside the window.
+    api.setWindowHeight(height).catch((error) => console.warn("resize failed", error));
+  }
   const dialog = mountSettingsDialog(root, api, {
     onSaved(saved) {
       settings = saved;
@@ -88,8 +97,12 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
       message.className = "";
     },
     onClose() {
+      fitWindow(WINDOW_HEIGHT);
       render();
       entry.focus();
+    },
+    onResize(height) {
+      fitWindow(Math.max(WINDOW_HEIGHT, Math.ceil(height)));
     },
   });
 
@@ -100,6 +113,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     blockFormat.disabled = checkbox.disabled;
     gear.disabled = blocked || savedPath !== undefined;
     journal.toggleAttribute("inert", dialog.isOpen);
+    journal.hidden = dialog.isOpen;
     checkbox.checked = settings?.use_yesterday_if_today_missing ?? false;
     blockFormat.checked = settings?.entry_format === "block";
     const inactive = note?.is_yesterday === true && !checkbox.checked;
@@ -119,8 +133,13 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     }
   }
 
+  // Configuration problems are fixed and explained in the Settings dialog.
+  function displayMessage(error: unknown) {
+    return isConfigError(error) ? "Config error!" : errorMessage(error);
+  }
+
   function showError(error: unknown) {
-    message.textContent = errorMessage(error);
+    message.textContent = displayMessage(error);
     message.className = "error";
   }
 
@@ -289,7 +308,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
         note = settings.note ?? undefined;
       }
     } catch (error) {
-      errors.push(errorMessage(error));
+      errors.push(displayMessage(error));
     }
     if (errors.length) showError(errors.join("\n"));
     busy = false;

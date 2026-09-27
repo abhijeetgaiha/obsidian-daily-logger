@@ -1,6 +1,22 @@
 import { invoke } from "@tauri-apps/api/core";
+import { LogicalSize } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+
+/** The window size set in tauri.conf.json. */
+export const WINDOW_WIDTH = 520;
+export const WINDOW_HEIGHT = 300;
+
+// Codes for problems fixed in the Settings dialog; the main window shows only "Config error!".
+const CONFIG_ERRORS = new Set([
+  "configuration", "note_source_unset", "not_a_vault", "no_daily_notes_plugin",
+  "plugin_disabled", "plugin_settings", "date_format", "note_path",
+]);
+
+export function isConfigError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error &&
+    typeof error.code === "string" && CONFIG_ERRORS.has(error.code);
+}
 
 export interface NoteLabel {
   name: string;
@@ -18,8 +34,11 @@ export type DuplicateHeading = "error" | "first" | "last";
 
 export type EntryFormat = "inline" | "block";
 
+export type NoteSource = "periodic" | "daily";
+
 export interface SettingsForm {
   vault_root: string | null;
+  note_source: NoteSource | null;
   heading: string;
   duplicate_heading: DuplicateHeading;
   entry_format: EntryFormat;
@@ -37,6 +56,8 @@ export interface HeadingList {
   note: string | null;
   headings: string[];
   problem: string | null;
+  detected: NoteSource | null;
+  layout: string | null;
 }
 
 export interface SavedEntry {
@@ -50,12 +71,14 @@ export interface JournalApi {
   setFallback(enabled: boolean): Promise<Settings>;
   setEntryFormat(format: EntryFormat): Promise<Settings>;
   readSettingsForm(): Promise<FormResult>;
-  listHeadings(vaultRoot: string | null): Promise<HeadingList>;
+  listHeadings(vaultRoot: string | null, noteSource: NoteSource | null): Promise<HeadingList>;
   pickVaultFolder(current: string | null): Promise<string | null>;
   saveSettings(form: SettingsForm): Promise<Settings>;
   submit(text: string): Promise<SavedEntry>;
   exit(text?: string): Promise<void>;
   startDragging(): Promise<void>;
+  /** Sets the window height in logical pixels; the width stays fixed. */
+  setWindowHeight(height: number): Promise<void>;
   /** Called when the OS asks to close or quit; resolves to an unsubscribe function. */
   onCloseRequested(handler: () => void): Promise<() => void>;
 }
@@ -67,12 +90,15 @@ export const api: JournalApi = {
   setFallback: (enabled) => invoke<Settings>("set_fallback", { enabled }),
   setEntryFormat: (format) => invoke<Settings>("set_entry_format", { format }),
   readSettingsForm: () => invoke<FormResult>("read_settings_form"),
-  listHeadings: (vaultRoot) => invoke<HeadingList>("list_headings", { vaultRoot }),
+  listHeadings: (vaultRoot, noteSource) =>
+    invoke<HeadingList>("list_headings", { vaultRoot, noteSource }),
   pickVaultFolder: (current) => invoke<string | null>("pick_vault_folder", { current }),
   saveSettings: (form) => invoke<Settings>("save_settings", { form }),
   submit: (text) => invoke<SavedEntry>("submit_entry", { text }),
   exit: (text) => invoke<void>("request_exit", { text: text ?? null }),
   startDragging: () => getCurrentWindow().startDragging(),
+  setWindowHeight: (height) =>
+    getCurrentWindow().setSize(new LogicalSize(WINDOW_WIDTH, height)),
   onCloseRequested: (handler) => listen("close-requested", handler),
 };
 
