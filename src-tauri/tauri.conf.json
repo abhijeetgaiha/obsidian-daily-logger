@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Journal Logger",
-  "version": "0.8.0",
-  "identifier": "local.journal.logger",
+  "productName": "Obsidian Daily Logger",
+  "version": "0.10.0",
+  "identifier": "local.obsidian.daily.logger",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Journal Logger",
+        "title": "Obsidian Daily Logger",
         "width": 520,
         "height": 300,
         "center": true,

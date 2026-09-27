@@ -1,4 +1,4 @@
-# Journal Logger
+# Obsidian Daily Logger
 
 A frameless journal-entry window built with Tauri 2, framework-free TypeScript,
 and a pure Rust logging core. The same source builds on Windows x64, Windows
@@ -102,8 +102,8 @@ path and lists its problems:
 
 | OS | Location |
 | --- | --- |
-| Windows | `%APPDATA%\local.journal.logger\config.json` |
-| macOS | `config.json` inside `local.journal.logger` in your user's Library > Application Support |
+| Windows | `%APPDATA%\local.obsidian.daily.logger\config.json` |
+| macOS | `config.json` inside `local.obsidian.daily.logger` in your user's Library > Application Support |
 
 Copy `config.example.json`, set `vault_root` to the **absolute path of an
 Obsidian vault**, and `note_source` to `"periodic"` (Periodic Notes) or

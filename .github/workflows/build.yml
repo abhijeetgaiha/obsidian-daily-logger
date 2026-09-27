@@ -57,7 +57,7 @@ jobs:
           TARGET: ${{ matrix.target }}
           PE_MACHINE: ${{ matrix.pe_machine }}
         run: |
-          $binary = "target\$env:TARGET\release\journal-logger.exe"
+          $binary = "target\$env:TARGET\release\obsidian-daily-logger.exe"
           $bytes = [IO.File]::ReadAllBytes((Resolve-Path $binary))
           $pe = [BitConverter]::ToInt32($bytes, 0x3c)
           if ([BitConverter]::ToUInt16($bytes, $pe + 4) -ne [Convert]::ToUInt16($env:PE_MACHINE, 16)) {
@@ -68,23 +68,23 @@ jobs:
       - name: Verify and archive the macOS application
         if: runner.os == 'macOS'
         run: |
-          test "$(lipo -archs 'target/aarch64-apple-darwin/release/bundle/macos/Journal Logger.app/Contents/MacOS/journal-logger')" = arm64
-          codesign --verify --deep --strict --verbose=2 'target/aarch64-apple-darwin/release/bundle/macos/Journal Logger.app'
+          test "$(lipo -archs 'target/aarch64-apple-darwin/release/bundle/macos/Obsidian Daily Logger.app/Contents/MacOS/obsidian-daily-logger')" = arm64
+          codesign --verify --deep --strict --verbose=2 'target/aarch64-apple-darwin/release/bundle/macos/Obsidian Daily Logger.app'
           test -n "$(find target/aarch64-apple-darwin/release/bundle/dmg -name '*.dmg' -print -quit)"
-          tar -czf target/aarch64-apple-darwin/release/Journal-Logger.app.tar.gz -C target/aarch64-apple-darwin/release/bundle/macos 'Journal Logger.app'
+          tar -czf target/aarch64-apple-darwin/release/Obsidian-Daily-Logger.app.tar.gz -C target/aarch64-apple-darwin/release/bundle/macos 'Obsidian Daily Logger.app'
       - name: Upload Windows installer
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: journal-logger-windows-${{ matrix.arch }}
+          name: obsidian-daily-logger-windows-${{ matrix.arch }}
           path: target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe
           if-no-files-found: error
       - name: Upload macOS bundles
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: journal-logger-macos-apple-silicon
+          name: obsidian-daily-logger-macos-apple-silicon
           path: |
             target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-            target/aarch64-apple-darwin/release/Journal-Logger.app.tar.gz
+            target/aarch64-apple-darwin/release/Obsidian-Daily-Logger.app.tar.gz
           if-no-files-found: error

@@ -416,7 +416,7 @@ fn atomic_write_with_permissions(
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "destination has no parent"))?;
     let mut temporary = tempfile::Builder::new()
-        .prefix(".journal-logger-")
+        .prefix(".obsidian-daily-logger-")
         .suffix(".tmp")
         .tempfile_in(parent)?;
     temporary.write_all(data)?;

@@ -1,6 +1,6 @@
 [package]
-name = "journal-logger"
-version = "0.8.0"
+name = "obsidian-daily-logger"
+version = "0.10.0"
 description = "A minimal, local daily-note logger"
 edition = "2021"
 
@@ -10,7 +10,7 @@ edition = "2021"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "journal_logger_lib"
+name = "obsidian_daily_logger_lib"
 crate-type = ["rlib"]
 
 [build-dependencies]

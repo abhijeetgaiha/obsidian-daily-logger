@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    journal_logger_lib::run()
+    obsidian_daily_logger_lib::run()
 }

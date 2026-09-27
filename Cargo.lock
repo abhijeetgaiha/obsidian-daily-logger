@@ -1651,20 +1651,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "journal-logger"
-version = "0.8.0"
-dependencies = [
- "chrono",
- "journal-core",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tempfile",
-]
-
-[[package]]
 name = "js-sys"
 version = "0.3.105"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2138,6 +2124,20 @@ dependencies = [
  "objc2-app-kit",
  "objc2-core-foundation",
  "objc2-foundation",
+]
+
+[[package]]
+name = "obsidian-daily-logger"
+version = "0.10.0"
+dependencies = [
+ "chrono",
+ "journal-core",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tempfile",
 ]
 
 [[package]]
