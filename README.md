@@ -1,7 +1,7 @@
 # Obsidian Daily Logger
 
-A frameless journal-entry window built with Tauri 2, framework-free TypeScript,
-and a pure Rust logging core. The same source builds on Windows x64, Windows
+A frameless journal-entry window built with Tauri 2, framework-free TypeScript
+with a CodeMirror 6 editor, and a pure Rust logging core. The same source builds on Windows x64, Windows
 ARM64, and macOS Apple Silicon. No Python, Node, or development server is needed
 at runtime.
 
@@ -10,6 +10,31 @@ at runtime.
 Launch normally and type into the focused text box.
 
 - **Enter** saves and exits; **Shift+Enter** inserts a newline.
+- **Formatting preview:** `**bold**`/`__bold__` shows in bold, `*italic*`/`_italic_`
+  in italics, `-`/`*`/`+` bullets and `1.`/`1)` numbered items get coloured markers
+  and a hanging indent, and `[[links]]` are link-coloured. The Markdown characters
+  stay visible, just dimmed, and the text saved is exactly what you typed. Other
+  Markdown (headings, code, strikethrough, highlights) is shown as plain text.
+- **Note links:** typing `[[` opens a list of the vault's Markdown notes that
+  narrows as you type (case-insensitive; names starting with the text first, then
+  words starting with it, then names or folders containing it). Each shows its folder.
+  **Up/Down** choose, **Enter** or **Tab** inserts the link and the closing `]]`
+  (without doubling a `]]` already there), and **Escape** closes the list without
+  exiting. While the list is open, Enter does not save.
+  - The link text follows the vault's **Files and links > New link format**
+    (`.obsidian/app.json`): *Shortest* (the default) inserts the note name, or its
+    full path when another note has the same name; *Absolute* inserts the full
+    vault path; *Relative* inserts a path relative to the daily note shown in the
+    bottom-right (today's expected note if none exists). Links are always
+    `[[wikilinks]]`, even if Obsidian is set to use Markdown links. Obsidian does
+    not keep a readable link index in the vault, so the app lists notes itself.
+  - Notes are every `.md` file in the vault except inside dot-folders such as
+    `.obsidian` and `.trash`; symlinked folders are not followed, and at most
+    20,000 notes are listed. Only file names are read, never note contents.
+    Headings (`#`), block references, aliases, and attachments are not offered.
+  - The list is read at startup and after saving settings, and reloaded in the
+    background when you type `[[` more than 30 seconds after the last read. If the
+    vault or configuration cannot be read, no list appears and typing is unaffected.
 - **Escape** keeps the current text as a draft and exits without logging it.
   The draft is restored on the next launch. Closing is blocked during an active operation.
 - The draft **autosaves** 1 second after you stop typing (and at least every
@@ -294,10 +319,14 @@ npm run tauri build -- --target x86_64-pc-windows-msvc
 ```
 
 There is no Python sidecar, shell plugin, or JavaScript filesystem plugin.
-Rust handles all journal access and timestamps. The folder picker comes from
+Rust handles all journal access and timestamps, including the read-only note
+listing for `[[` links. The folder picker comes from
 `tauri-plugin-dialog`, invoked only from Rust; the webview is granted no dialog
 or filesystem permissions. Assets are local, with a
-restrictive CSP and window-scoped command permissions.
+restrictive CSP and window-scoped command permissions. The editor lives in a
+shadow root so CodeMirror's styles load as constructable stylesheets, which the
+CSP allows without `'unsafe-inline'`. This needs WebKit from Safari 16.4 or later
+on macOS; with older WebKit the editor appears unstyled.
 
 ## GitHub Actions and unsigned downloads
 
@@ -323,5 +352,6 @@ If macOS says the app "is damaged", the bundle signature is missing or broken;
 
 Native builds and unit tests do not establish graphical behavior on a Mac.
 Manually check focus, keys, sticky preferences, the settings dialog and folder
-picker, errors, dragging, and note output
+picker, errors, dragging, the formatting preview and `[[` note list (including
+Enter/Tab/Escape while it is open), and note output
 against a disposable vault, plus the downloaded app's Gatekeeper experience.

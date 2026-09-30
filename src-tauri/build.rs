@@ -8,6 +8,7 @@ fn main() {
             "set_entry_format",
             "read_settings_form",
             "list_headings",
+            "list_notes",
             "pick_vault_folder",
             "save_settings",
             "submit_entry",

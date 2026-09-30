@@ -1,5 +1,7 @@
 use crate::{
-    config::{self, EntryFormat, FormResult, HeadingList, NoteSource, Settings, SettingsForm},
+    config::{
+        self, EntryFormat, FormResult, HeadingList, NoteIndex, NoteSource, Settings, SettingsForm,
+    },
     draft,
     error::AppError,
 };
@@ -215,6 +217,16 @@ pub async fn list_headings(
         ))
     })
     .await
+}
+
+#[tauri::command]
+pub async fn list_notes(state: State<'_, AppState>) -> Result<NoteIndex, AppError> {
+    let today = Local::now().date_naive();
+    let path = state.config_path.clone();
+    // Read-only, so it skips the session lock and never makes autosave report "busy".
+    tauri::async_runtime::spawn_blocking(move || config::list_notes(&path, today))
+        .await
+        .map_err(|_| worker_failed())
 }
 
 #[tauri::command]

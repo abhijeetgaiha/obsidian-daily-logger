@@ -71,7 +71,7 @@ fn invalid(path: &Path, detail: impl Into<String>) -> LogError {
 }
 
 /// Parsed JSON, or `None` if the file does not exist.
-fn read_json(path: &Path) -> Result<Option<Value>, LogError> {
+pub(crate) fn read_json(path: &Path) -> Result<Option<Value>, LogError> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),

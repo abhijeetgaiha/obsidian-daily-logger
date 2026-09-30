@@ -1,10 +1,14 @@
 import {
-  errorMessage, isConfigError, WINDOW_HEIGHT, type JournalApi, type NoteLabel, type Settings,
+  errorMessage, isConfigError, WINDOW_HEIGHT, type JournalApi, type NoteLabel, type NoteLink,
+  type Settings,
 } from "./api";
 import { createAutosave } from "./autosave";
+import { createEditor, refreshLinkCompletion } from "./editor";
 import { mountSettingsDialog } from "./settings";
 
 const AUTOSAVE_NOTICE_MS = 1500;
+/** A `[[` query reloads the note index in the background once it is older than this. */
+export const NOTE_INDEX_MAX_AGE_MS = 30_000;
 
 const gearIcon = `
   <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false">
@@ -18,9 +22,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   root.innerHTML = `
     <div id="journal">
       <div class="drag-area" aria-hidden="true"></div>
-      <textarea id="entry" aria-label="Journal entry"
-        placeholder="Write a journal entry..." spellcheck="true"
-        aria-describedby="message"></textarea>
+      <div id="entry"></div>
       <div class="status-row">
         <div class="toggles">
           <label class="fallback">
@@ -43,7 +45,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     </div>
   `;
   const journal = root.querySelector<HTMLDivElement>("#journal")!;
-  const entry = root.querySelector<HTMLTextAreaElement>("#entry")!;
+  const entry = root.querySelector<HTMLDivElement>("#entry")!;
   const checkbox = root.querySelector<HTMLInputElement>("#fallback")!;
   const blockFormat = root.querySelector<HTMLInputElement>("#block-format")!;
   const noteName = root.querySelector<HTMLSpanElement>("#note-name")!;
@@ -58,8 +60,22 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   let savedPath: string | undefined;
   let autosaveError: string | undefined;
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+  let disposed = false;
+  let notes: readonly NoteLink[] = [];
+  let notesLoadedAt = -Infinity;
+  let notesLoading = false;
+  let notesStale = false;
+  const editor = createEditor(entry, {
+    placeholder: "Write a journal entry...",
+    label: "Journal entry",
+    onChange: () => autosave.schedule(),
+    notes: () => notes,
+    onLinkQuery() {
+      if (!notesLoading && Date.now() - notesLoadedAt > NOTE_INDEX_MAX_AGE_MS) loadNotes();
+    },
+  });
   const autosave = createAutosave({
-    read: () => entry.value,
+    read: () => editor.value(),
     state() {
       if (!draftLoaded || savedPath !== undefined) return "disabled";
       return busy || dialog.isOpen ? "blocked" : "ready";
@@ -95,11 +111,12 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
       note = saved.note ?? undefined;
       message.textContent = "Settings saved.";
       message.className = "";
+      loadNotes();
     },
     onClose() {
       fitWindow(WINDOW_HEIGHT);
       render();
-      entry.focus();
+      editor.focus();
     },
     onResize(height) {
       fitWindow(Math.max(WINDOW_HEIGHT, Math.ceil(height)));
@@ -108,7 +125,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
 
   function render() {
     const blocked = busy || dialog.isOpen;
-    entry.readOnly = blocked || !draftLoaded || savedPath !== undefined;
+    editor.setReadOnly(blocked || !draftLoaded || savedPath !== undefined);
     checkbox.disabled = blocked || settings === undefined || savedPath !== undefined;
     blockFormat.disabled = checkbox.disabled;
     gear.disabled = blocked || savedPath !== undefined;
@@ -121,6 +138,32 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     noteName.classList.toggle("inactive", inactive);
     noteName.title = inactive ? "Yesterday's note is used only when the checkbox is ticked." : "";
     root.setAttribute("aria-busy", String(busy));
+  }
+
+  // Loads the `[[` suggestions. Failures leave the previous list; they never block typing.
+  function loadNotes() {
+    if (notesLoading) {
+      notesStale = true;
+      return;
+    }
+    notesLoading = true;
+    api.listNotes().then(
+      (index) => {
+        notes = index.notes;
+        if (index.problem) console.warn("note index:", index.problem);
+      },
+      (error) => console.warn("note index failed", error),
+    ).finally(() => {
+      notesLoading = false;
+      notesLoadedAt = Date.now();
+      if (disposed) return;
+      if (notesStale) {
+        notesStale = false;
+        loadNotes();
+      } else {
+        refreshLinkCompletion(editor);
+      }
+    });
   }
 
   async function reloadSettings() {
@@ -148,7 +191,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     render();
     await autosave.idle();
     try {
-      await api.exit(savedPath === undefined && draftLoaded ? entry.value : undefined);
+      await api.exit(savedPath === undefined && draftLoaded ? editor.value() : undefined);
     } catch (error) {
       showError(
         savedPath === undefined
@@ -157,15 +200,15 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
       );
       busy = false;
       render();
-      entry.focus();
+      editor.focus();
     }
   }
 
   async function restoreDraft() {
-    entry.value = await api.loadDraft();
-    autosave.reset(entry.value);
+    editor.setValue(await api.loadDraft());
+    autosave.reset(editor.value());
     draftLoaded = true;
-    entry.setSelectionRange(entry.value.length, entry.value.length);
+    editor.moveCursorToEnd();
   }
 
   async function save() {
@@ -181,17 +224,17 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
         message.textContent = "Draft loaded. Press Enter to save or Escape to keep it for later.";
         busy = false;
         render();
-        entry.focus();
+        editor.focus();
         return;
       }
       await reloadSettings();
-      const result = await api.submit(entry.value);
+      const result = await api.submit(editor.value());
       savedPath = result.note_path;
     } catch (error) {
       showError(error);
       busy = false;
       render();
-      entry.focus();
+      editor.focus();
       return;
     }
     message.textContent = `Saved to ${savedPath}. Closing...`;
@@ -223,7 +266,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     } finally {
       busy = false;
       render();
-      entry.focus();
+      editor.focus();
     }
   }
 
@@ -239,7 +282,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     } finally {
       busy = false;
       render();
-      if (!dialog.isOpen) entry.focus();
+      if (!dialog.isOpen) editor.focus();
     }
   }
 
@@ -252,6 +295,8 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
       }
       return;
     }
+    // The `[[` suggestion list already handled Enter or Escape.
+    if (event.defaultPrevented) return;
     if (event.key === "Escape") {
       event.preventDefault();
       if (!busy && !event.repeat) void close();
@@ -270,12 +315,10 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     }
   }
 
-  const onInput = () => autosave.schedule();
   const onBlur = () => void autosave.flush();
   const onCloseRequested = () => {
     if (!busy) void close();
   };
-  let disposed = false;
   let unlistenClose: (() => void) | undefined;
   api.onCloseRequested(onCloseRequested).then(
     (unlisten) => {
@@ -285,7 +328,6 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     (error) => showError(error),
   );
 
-  entry.addEventListener("input", onInput);
   window.addEventListener("blur", onBlur);
   checkbox.addEventListener("change", changeFallback);
   blockFormat.addEventListener("change", changeEntryFormat);
@@ -293,7 +335,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   dragArea.addEventListener("pointerdown", startDragging);
   window.addEventListener("keydown", onKeyDown);
   render();
-  entry.focus();
+  editor.focus();
   async function initialize() {
     const errors: string[] = [];
     try {
@@ -313,7 +355,8 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     if (errors.length) showError(errors.join("\n"));
     busy = false;
     render();
-    entry.focus();
+    editor.focus();
+    loadNotes();
   }
   void initialize();
 
@@ -322,13 +365,13 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     unlistenClose?.();
     autosave.dispose();
     clearTimeout(noticeTimer);
-    entry.removeEventListener("input", onInput);
     window.removeEventListener("blur", onBlur);
     window.removeEventListener("keydown", onKeyDown);
     checkbox.removeEventListener("change", changeFallback);
     blockFormat.removeEventListener("change", changeEntryFormat);
     gear.removeEventListener("click", openSettings);
     dialog.destroy();
+    editor.destroy();
     dragArea.removeEventListener("pointerdown", startDragging);
   };
 }

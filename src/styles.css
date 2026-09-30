@@ -5,6 +5,14 @@
   background: #faf9f6;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+  /* Editor colours; they inherit into the editor's shadow root. */
+  --placeholder: #8a8a8a;
+  --md-mark: #9a9a9a;
+  --md-list: #6d7f8f;
+  --md-link: #3d6f9e;
+  --popup-bg: #ffffff;
+  --popup-border: #c9c9c6;
+  --popup-selected: #dde7f0;
 }
 
 * { box-sizing: border-box; }
@@ -32,20 +40,14 @@ body { margin: 0; }
   user-select: none;
 }
 
-textarea {
+/* Hosts the editor (in a shadow root, styled in editor.ts). */
+#entry {
   flex: 1;
   min-height: 70px;
   width: 100%;
-  resize: none;
-  border: 0;
-  border-radius: 3px;
-  padding: 7px;
   font: 16px/1.5 system-ui, sans-serif;
-  color: inherit;
-  background: transparent;
 }
 
-textarea:focus-visible { outline: 1px solid #70899e; }
 input:focus-visible,
 button:focus-visible { outline: 2px solid #537a99; }
 
@@ -217,7 +219,17 @@ input { accent-color: #537a99; }
 .error { color: #a22727; }
 
 @media (prefers-color-scheme: dark) {
-  :root { color: #efefec; background: #242523; }
+  :root {
+    color: #efefec;
+    background: #242523;
+    --placeholder: #8d8e8a;
+    --md-mark: #85877f;
+    --md-list: #9fb1c1;
+    --md-link: #8cb8e3;
+    --popup-bg: #2e302d;
+    --popup-border: #50524e;
+    --popup-selected: #3d4c59;
+  }
   #app { border-color: #626460; }
   .overlay { border-color: #626460; background: #242523; }
   #settings-heading-note.notice,

@@ -1,5 +1,6 @@
 pub mod moment;
 pub mod obsidian;
+pub mod vault_index;
 
 use chrono::{DateTime, NaiveDate, TimeZone, Timelike};
 use moment::DateFormat;

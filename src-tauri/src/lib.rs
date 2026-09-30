@@ -22,6 +22,7 @@ pub fn run() {
             commands::set_entry_format,
             commands::read_settings_form,
             commands::list_headings,
+            commands::list_notes,
             commands::pick_vault_folder,
             commands::save_settings,
             commands::submit_entry,

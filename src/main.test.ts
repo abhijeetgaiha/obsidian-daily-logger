@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { completionStatus, currentCompletions } from "@codemirror/autocomplete";
+import { EditorView } from "@codemirror/view";
 import { AUTOSAVE_DELAY_MS, AUTOSAVE_MAX_WAIT_MS } from "./autosave";
 import {
-  errorMessage, type FormResult, type HeadingList, type JournalApi, type SavedEntry,
-  type Settings,
+  errorMessage, type FormResult, type HeadingList, type JournalApi, type NoteIndex,
+  type SavedEntry, type Settings,
 } from "./api";
-import { mountJournal } from "./ui";
+import { mountJournal, NOTE_INDEX_MAX_AGE_MS } from "./ui";
 
 const initial: Settings = {
   config_path: "test-config.json",
@@ -37,6 +39,16 @@ const noteHeadings: HeadingList = {
   layout: periodicLayout,
 };
 
+const vaultNotes: NoteIndex = {
+  notes: [
+    { name: "Project Plan", folder: "Work", link: "Project Plan" },
+    { name: "Plan", folder: "A", link: "A/Plan" },
+    { name: "Plan", folder: "B", link: "B/Plan" },
+    { name: "Home", folder: "", link: "Home" },
+  ],
+  problem: null,
+};
+
 function mockApi() {
   return {
     loadDraft: vi.fn<JournalApi["loadDraft"]>().mockResolvedValue(""),
@@ -56,6 +68,7 @@ function mockApi() {
     })),
     readSettingsForm: vi.fn<JournalApi["readSettingsForm"]>().mockResolvedValue(validForm),
     listHeadings: vi.fn<JournalApi["listHeadings"]>().mockResolvedValue(noteHeadings),
+    listNotes: vi.fn<JournalApi["listNotes"]>().mockResolvedValue(vaultNotes),
     pickVaultFolder: vi.fn<JournalApi["pickVaultFolder"]>().mockResolvedValue("/picked"),
     saveSettings: vi.fn<JournalApi["saveSettings"]>().mockImplementation(async (form) => ({
       ...initial, use_yesterday_if_today_missing: form.use_yesterday_if_today_missing,
@@ -87,7 +100,7 @@ async function setup(api = mockApi()) {
   await flush();
   return {
     api,
-    entry: root.querySelector<HTMLTextAreaElement>("#entry")!,
+    entry: entryHost(root.querySelector<HTMLDivElement>("#entry")!),
     checkbox: root.querySelector<HTMLInputElement>("#fallback")!,
     blockFormat: root.querySelector<HTMLInputElement>("#block-format")!,
     message: root.querySelector<HTMLParagraphElement>("#message")!,
@@ -112,9 +125,32 @@ async function setup(api = mockApi()) {
   };
 }
 
-function type(entry: HTMLTextAreaElement, value: string) {
+/** The editor host, with textarea-like accessors backed by its CodeMirror view. */
+type EntryHost = HTMLDivElement & {
+  value: string;
+  readonly readOnly: boolean;
+  readonly selectionStart: number;
+  readonly view: EditorView;
+  readonly content: HTMLElement;
+};
+
+function entryHost(host: HTMLDivElement): EntryHost {
+  const view = EditorView.findFromDOM(host.shadowRoot!.querySelector<HTMLElement>(".cm-editor")!)!;
+  return Object.defineProperties(host, {
+    value: {
+      get: () => view.state.doc.toString(),
+      set: (text: string) =>
+        view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } }),
+    },
+    readOnly: { get: () => view.state.readOnly },
+    selectionStart: { get: () => view.state.selection.main.from },
+    view: { value: view },
+    content: { value: view.contentDOM },
+  }) as EntryHost;
+}
+
+function type(entry: EntryHost, value: string) {
   entry.value = value;
-  entry.dispatchEvent(new Event("input"));
 }
 
 async function tick(ms = 0) {
@@ -136,7 +172,7 @@ async function openSettings(api = mockApi()) {
 
 function key(target: HTMLElement, key: string, options: KeyboardEventInit = {}) {
   const event = new KeyboardEvent("keydown", {
-    key, bubbles: true, cancelable: true, ...options,
+    key, bubbles: true, composed: true, cancelable: true, ...options,
   });
   target.dispatchEvent(event);
   return event;
@@ -1210,5 +1246,151 @@ describe("draft autosave", () => {
     await setup();
     cleanups.pop()?.();
     expect(unlistenClose).toHaveBeenCalledOnce();
+  });
+});
+
+describe("[[ note link suggestions", () => {
+  // Longer than CodeMirror's typing delay and its guard against accepting a list just opened.
+  const SUGGEST_MS = 250;
+
+  function typeAt(entry: EntryHost, text: string, at = entry.view.state.selection.main.head) {
+    entry.view.dispatch({
+      changes: { from: at, insert: text },
+      selection: { anchor: at + text.length },
+      userEvent: "input.type",
+    });
+  }
+
+  async function suggest(entry: EntryHost, text: string) {
+    entry.view.focus();
+    typeAt(entry, text);
+    await new Promise((resolve) => setTimeout(resolve, SUGGEST_MS));
+  }
+
+  function suggestions(entry: EntryHost) {
+    return currentCompletions(entry.view.state).map(({ label, detail }) =>
+      detail ? `${detail}/${label}` : label);
+  }
+
+  it("lists matching vault notes after [[, name prefixes first", async () => {
+    const { api, entry } = await setup();
+    expect(api.listNotes).toHaveBeenCalledOnce();
+    await suggest(entry, "Met with [[pl");
+    expect(completionStatus(entry.view.state)).toBe("active");
+    expect(suggestions(entry)).toEqual(["A/Plan", "B/Plan", "Work/Project Plan"]);
+    typeAt(entry, "an");
+    await new Promise((resolve) => setTimeout(resolve, SUGGEST_MS));
+    expect(suggestions(entry)).toEqual(["A/Plan", "B/Plan", "Work/Project Plan"]);
+  });
+
+  it("does not suggest outside [[ or after the link is closed", async () => {
+    const { entry } = await setup();
+    await suggest(entry, "plan [plan [[Home]] ");
+    expect(completionStatus(entry.view.state)).toBe(null);
+  });
+
+  it("Enter inserts the note's link text and ]], then saves on the next Enter", async () => {
+    const { api, entry } = await setup();
+    await suggest(entry, "Met with [[pl");
+    expect(key(entry.content, "Enter").defaultPrevented).toBe(true);
+    await flush();
+    expect(entry.value).toBe("Met with [[A/Plan]]");
+    expect(entry.selectionStart).toBe(entry.value.length);
+    expect(api.submit).not.toHaveBeenCalled();
+    key(entry.content, "Enter");
+    await flush();
+    expect(api.submit).toHaveBeenCalledExactlyOnceWith("Met with [[A/Plan]]");
+  });
+
+  it("Tab and the arrow keys pick a suggestion without doubling an existing ]]", async () => {
+    const { entry } = await setup();
+    entry.value = "See [[]] later";
+    entry.view.dispatch({ selection: { anchor: 6 } });
+    await suggest(entry, "pl");
+    key(entry.content, "ArrowDown");
+    key(entry.content, "ArrowDown");
+    expect(key(entry.content, "Tab").defaultPrevented).toBe(true);
+    expect(entry.value).toBe("See [[Project Plan]] later");
+    expect(entry.selectionStart).toBe("See [[Project Plan]]".length);
+  });
+
+  it("Escape closes the suggestions without exiting; a second Escape exits", async () => {
+    const { api, entry } = await setup();
+    await suggest(entry, "[[ho");
+    key(entry.content, "Escape");
+    await flush();
+    expect(completionStatus(entry.view.state)).toBe(null);
+    expect(api.exit).not.toHaveBeenCalled();
+    expect(entry.value).toBe("[[ho");
+    key(entry.content, "Escape");
+    await flush();
+    expect(api.exit).toHaveBeenCalledExactlyOnceWith("[[ho");
+  });
+
+  it("reloads the notes after saving settings and when the list is stale", async () => {
+    const { api, entry, gear, saveButton } = await setup();
+    gear.click();
+    await flush();
+    saveButton.click();
+    await flush();
+    expect(api.listNotes).toHaveBeenCalledTimes(2);
+    await suggest(entry, "[[h");
+    expect(api.listNotes).toHaveBeenCalledTimes(2);
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now + NOTE_INDEX_MAX_AGE_MS + 1);
+    try {
+      await suggest(entry, "o");
+      expect(api.listNotes).toHaveBeenCalledTimes(3);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("shows notes that load after [[ was typed", async () => {
+    const api = mockApi();
+    let resolve!: (index: NoteIndex) => void;
+    api.listNotes.mockReturnValue(new Promise((done) => { resolve = done; }));
+    const { entry } = await setup(api);
+    await suggest(entry, "[[ho");
+    expect(completionStatus(entry.view.state)).toBe(null);
+    await suggest(entry, "m");
+    resolve(vaultNotes);
+    await new Promise((done) => setTimeout(done, SUGGEST_MS));
+    expect(suggestions(entry)).toEqual(["Home"]);
+    expect(api.listNotes).toHaveBeenCalledOnce();
+  });
+
+  it("Ctrl+Enter saves rather than inserting a line", async () => {
+    const { api, entry } = await setup();
+    entry.value = "text";
+    key(entry.content, "Enter", { ctrlKey: true });
+    await flush();
+    expect(api.submit).toHaveBeenCalledExactlyOnceWith("text");
+  });
+
+  it("undo never erases the restored draft", async () => {
+    const api = mockApi();
+    api.loadDraft.mockResolvedValue("restored");
+    const { entry } = await setup(api);
+    entry.view.focus();
+    typeAt(entry, "!");
+    expect(entry.value).toBe("restored!");
+    key(entry.content, "z", { ctrlKey: true });
+    key(entry.content, "z", { ctrlKey: true });
+    expect(entry.value).toBe("restored");
+  });
+
+  it("keeps working without suggestions when notes cannot be listed", async () => {
+    const api = mockApi();
+    api.listNotes.mockRejectedValue(new Error("IPC failed"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { entry, message } = await setup(api);
+    await suggest(entry, "[[ho");
+    expect(completionStatus(entry.view.state)).toBe(null);
+    expect(message.textContent).toBe("");
+    key(entry.content, "Enter");
+    await flush();
+    expect(api.submit).toHaveBeenCalledExactlyOnceWith("[[ho");
+    warn.mockRestore();
   });
 });

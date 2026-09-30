@@ -15,6 +15,7 @@
     "allow-set-entry-format",
     "allow-read-settings-form",
     "allow-list-headings",
+    "allow-list-notes",
     "allow-pick-vault-folder",
     "allow-save-settings",
     "allow-submit-entry",

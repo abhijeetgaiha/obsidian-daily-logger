@@ -138,6 +138,21 @@ pub struct HeadingList {
     pub layout: Option<String>,
 }
 
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub struct NoteLink {
+    pub name: String,
+    /// Vault-relative folder, empty for the vault root.
+    pub folder: String,
+    /// The text to insert between `[[` and `]]`.
+    pub link: String,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct NoteIndex {
+    pub notes: Vec<NoteLink>,
+    pub problem: Option<String>,
+}
+
 fn error(path: &Path, detail: impl std::fmt::Display) -> AppError {
     AppError::new(
         "configuration",
@@ -344,6 +359,50 @@ pub fn list_headings(
     result
 }
 
+/// The vault's notes for `[[` completion, with link text in the vault's link format. Problems
+/// (including configuration errors) leave the list empty or partial instead of failing.
+pub fn list_notes(path: &Path, today: NaiveDate) -> NoteIndex {
+    let config = match load(path) {
+        Ok(config) => config,
+        Err(error) => {
+            return NoteIndex {
+                notes: Vec::new(),
+                problem: Some(error.message),
+            }
+        }
+    };
+    let scan = match journal_core::vault_index::scan_notes(&config.vault_root) {
+        Ok(scan) => scan,
+        Err(error) => {
+            return NoteIndex {
+                notes: Vec::new(),
+                problem: Some(error.to_string()),
+            }
+        }
+    };
+    let format = journal_core::vault_index::link_format(&config.vault_root);
+    let links =
+        journal_core::vault_index::link_texts(&scan.notes, format, &config.daily_folder(today));
+    NoteIndex {
+        notes: scan
+            .notes
+            .into_iter()
+            .zip(links)
+            .map(|(note, link)| NoteLink {
+                name: note.name,
+                folder: note.folder,
+                link,
+            })
+            .collect(),
+        problem: scan.truncated.then(|| {
+            format!(
+                "Only the first {} notes are suggested.",
+                journal_core::vault_index::MAX_NOTES
+            )
+        }),
+    }
+}
+
 /// Validates the dialog's settings, then creates or replaces the settings file.
 pub fn save_form(path: &Path, form: &SettingsForm, today: NaiveDate) -> Result<Settings, AppError> {
     let root = form
@@ -406,6 +465,23 @@ impl Config {
     pub fn layout(&self) -> Result<journal_core::NoteLayout, AppError> {
         let source = self.note_source.ok_or_else(note_source_unset)?;
         Ok(journal_core::obsidian::resolve_layout(&self.vault_root, source.into())?.layout)
+    }
+
+    /// The vault-relative folder of the note entries go to (the located note, else today's
+    /// expected note), or the vault root if it cannot be determined.
+    fn daily_folder(&self, today: NaiveDate) -> String {
+        let Ok(layout) = self.layout() else {
+            return String::new();
+        };
+        let date = match journal_core::locate_daily_note(&self.vault_root, &layout, today) {
+            Ok(Some(note)) if note.is_yesterday => today.pred_opt().unwrap_or(today),
+            _ => today,
+        };
+        layout
+            .relative_path(date)
+            .ok()
+            .and_then(|path| path.rsplit_once('/').map(|(folder, _)| folder.to_owned()))
+            .unwrap_or_default()
     }
 
     // Inspection failures are displayed as no note; saving reports the underlying error.
@@ -1052,5 +1128,58 @@ mod tests {
             assert_eq!(result.form.note_source, None);
             assert!(result.issue.unwrap().contains("\"note_source\""));
         }
+    }
+
+    #[test]
+    fn list_notes_links_relative_to_the_daily_note_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.json");
+        let index = list_notes(&path, today());
+        assert!(index.notes.is_empty());
+        assert!(index.problem.unwrap().contains("Cannot use"));
+        write_config(&path, root.path());
+        for file in [
+            "Projects/Plan.md",
+            "Home.md",
+            "daily/2026/2026-03/2026-03-01.md",
+        ] {
+            let note = root.path().join(file);
+            fs::create_dir_all(note.parent().unwrap()).unwrap();
+            fs::write(note, b"").unwrap();
+        }
+        let links = |index: NoteIndex| {
+            assert_eq!(index.problem, None);
+            index
+                .notes
+                .into_iter()
+                .map(|note| (note.name, note.folder, note.link))
+                .collect::<Vec<_>>()
+        };
+        let owned = |items: [(&str, &str, &str); 3]| {
+            items
+                .map(|(a, b, c)| (a.to_owned(), b.to_owned(), c.to_owned()))
+                .to_vec()
+        };
+        assert_eq!(
+            links(list_notes(&path, today())),
+            owned([
+                ("2026-03-01", "daily/2026/2026-03", "2026-03-01"),
+                ("Home", "", "Home"),
+                ("Plan", "Projects", "Plan"),
+            ])
+        );
+        fs::write(
+            root.path().join(".obsidian").join("app.json"),
+            r#"{"newLinkFormat": "relative"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            links(list_notes(&path, today())),
+            owned([
+                ("2026-03-01", "daily/2026/2026-03", "2026-03-01"),
+                ("Home", "", "../../../Home"),
+                ("Plan", "Projects", "../../../Projects/Plan"),
+            ])
+        );
     }
 }
