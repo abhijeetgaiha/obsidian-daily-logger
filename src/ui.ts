@@ -3,7 +3,7 @@ import {
   type Settings,
 } from "./api";
 import { createAutosave } from "./autosave";
-import { createEditor, refreshLinkCompletion } from "./editor";
+import { continueList, createEditor, refreshLinkCompletion } from "./editor";
 import { mountSettingsDialog } from "./settings";
 
 const AUTOSAVE_NOTICE_MS = 1500;
@@ -302,7 +302,9 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
       if (!busy && !event.repeat) void close();
     } else if (event.key === "Enter" && event.target === entry && !event.shiftKey) {
       event.preventDefault();
-      if (!event.repeat) void save();
+      if (!event.repeat && !busy && savedPath === undefined) {
+        if (!draftLoaded || !continueList(editor)) void save();
+      }
     }
   }
 

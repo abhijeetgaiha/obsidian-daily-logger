@@ -3,15 +3,18 @@ import {
   type CompletionContext, type CompletionResult,
 } from "@codemirror/autocomplete";
 import { defaultKeymap, history, historyKeymap, insertNewline } from "@codemirror/commands";
-import { defineLanguageFacet, Language, syntaxTree } from "@codemirror/language";
-import { Compartment, EditorState, Prec, type Range, Transaction } from "@codemirror/state";
+import { defineLanguageFacet, ensureSyntaxTree, Language, syntaxTree } from "@codemirror/language";
+import {
+  Compartment, EditorSelection, EditorState, Prec, type Range, Transaction,
+} from "@codemirror/state";
 import {
   Decoration, type DecorationSet, EditorView, keymap, placeholder, ViewPlugin, type ViewUpdate,
+  WidgetType,
 } from "@codemirror/view";
 import { parser as commonmark } from "@lezer/markdown";
 import type { NoteLink } from "./api";
 
-// Plain CommonMark: only its emphasis and list nodes are used, for styling.
+// CommonMark supplies formatting and list context; tags and wikilinks are handled separately.
 const markdownLanguage = new Language(defineLanguageFacet(), commonmark, [], "markdown");
 
 /** Suggestions offered after `[[`; more matches are left out. */
@@ -40,6 +43,64 @@ export interface JournalEditor {
 // The typed text between an unclosed `[[` and the cursor.
 const LINK_QUERY = /\[\[[^[\]|#\n]*$/;
 const WIKILINK = /\[\[[^[\]\n]+\]\]/g;
+const TAG = /#(?:[\p{L}\p{M}\p{N}_/-]|(?=[^\x00-\x7f])\p{S}|\u200d)+/gu;
+const TAG_EXCLUDED = /^(?:ATXHeading[1-6]|SetextHeading[12]|InlineCode|FencedCode|CodeBlock|URL|Autolink|Escape|HTMLTag|LinkTitle|LinkLabel)$/;
+
+class BulletWidget extends WidgetType {
+  eq(other: WidgetType): boolean {
+    return other instanceof BulletWidget;
+  }
+
+  toDOM(): HTMLElement {
+    const bullet = document.createElement("span");
+    bullet.className = "cm-md-list-mark cm-md-bullet";
+    bullet.textContent = "\u2022";
+    return bullet;
+  }
+
+  ignoreEvent(): boolean {
+    return false;
+  }
+}
+
+const bulletDecoration = Decoration.replace({ widget: new BulletWidget() });
+
+function tagDecorations(view: EditorView, from: number, to: number): Range<Decoration>[] {
+  const text = view.state.sliceDoc(from, to);
+  const tree = syntaxTree(view.state);
+  const links = [...text.matchAll(/\[\[[^[\]\n]*(?:\]\]|(?=\n|$))/g)];
+  const ranges: Range<Decoration>[] = [];
+  for (const match of text.matchAll(TAG)) {
+    const prefix = text.slice(0, match.index);
+    const before = prefix.match(/.$/u)?.[0] ?? "";
+    const start = from + match.index;
+    const afterEmphasisMark = tree.resolveInner(start, -1).name === "EmphasisMark";
+    if ((!afterEmphasisMark && /[\p{L}\p{M}\p{N}\p{S}_/#\u200d-]/u.test(before)) ||
+      /(?:[a-z][a-z\d+.-]*:\/\/|www\.)\S*$/i.test(prefix) ||
+      links.some((link) => match.index >= link.index && match.index < link.index + link[0].length)) {
+      continue;
+    }
+    let node = tree.resolveInner(start, 1);
+    let excluded = false;
+    for (;;) {
+      if (TAG_EXCLUDED.test(node.name)) {
+        excluded = true;
+        break;
+      }
+      if (!node.parent) break;
+      node = node.parent;
+    }
+    if (!excluded) {
+      let end = start + match[0].length;
+      const tail = tree.resolveInner(end, -1);
+      if (tail.name === "EmphasisMark") end = tail.from;
+      if (end > start + 1 && !/^#[\p{N}]+$/u.test(view.state.sliceDoc(start, end))) {
+        ranges.push(Decoration.mark({ class: "cm-md-tag" }).range(start, end));
+      }
+    }
+  }
+  return ranges;
+}
 
 function score(note: NoteLink, query: string): number | undefined {
   const name = note.name.toLowerCase();
@@ -111,7 +172,12 @@ const MAX_HANG = 40;
 function formatting(view: EditorView): DecorationSet {
   const ranges: Range<Decoration>[] = [];
   const mark = (className: string) => Decoration.mark({ class: className });
-  for (const { from, to } of view.visibleRanges) {
+  let coveredTo = -1;
+  for (const visible of view.visibleRanges) {
+    const from = Math.max(coveredTo + 1, view.state.doc.lineAt(visible.from).from);
+    const to = view.state.doc.lineAt(visible.to).to;
+    if (from > to) continue;
+    coveredTo = to;
     syntaxTree(view.state).iterate({
       from, to,
       enter(node) {
@@ -133,7 +199,11 @@ function formatting(view: EditorView): DecorationSet {
             const hang = Math.min(MAX_HANG, halfWidths(prefix));
             const kind = list === "BulletList" ? "cm-md-bullet" : "cm-md-number";
             ranges.push(Decoration.line({ class: `cm-md-list cm-md-hang-${hang}` }).range(line.from));
-            ranges.push(mark(`cm-md-list-mark ${kind}`).range(node.from, node.to));
+            ranges.push(
+              (list === "BulletList" && view.state.sliceDoc(node.from, node.to) === "-"
+                ? bulletDecoration
+                : mark(`cm-md-list-mark ${kind}`)).range(node.from, node.to),
+            );
             break;
           }
         }
@@ -147,6 +217,7 @@ function formatting(view: EditorView): DecorationSet {
       ranges.push(mark("cm-md-mark").range(start, start + 2));
       ranges.push(mark("cm-md-mark").range(end - 2, end));
     }
+    ranges.push(...tagDecorations(view, from, to));
   }
   return Decoration.set(ranges, true);
 }
@@ -188,9 +259,11 @@ const journalTheme = EditorView.theme({
   ".cm-md-strong": { fontWeight: "700" },
   ".cm-md-em": { fontStyle: "italic" },
   ".cm-md-mark": { color: "var(--md-mark)" },
-  ".cm-md-list-mark": { color: "var(--md-list)" },
+  ".cm-md-list-mark": { color: "var(--md-list)", textIndent: "0" },
+  ".cm-md-bullet": { display: "inline-block", width: "1ch", textAlign: "left" },
   ".cm-md-number": { fontVariantNumeric: "tabular-nums" },
   ".cm-md-wikilink": { color: "var(--md-link)" },
+  ".cm-md-tag": { color: "var(--md-tag)" },
   ...hangRules,
   ".cm-tooltip": {
     color: "inherit",
@@ -251,11 +324,11 @@ export function createEditor(host: HTMLElement, options: EditorOptions): Journal
           icons: false,
           maxRenderedOptions: MAX_SUGGESTIONS,
         }),
-        // Tab accepts a suggestion; Enter and Escape reach the window's handler when no list is open.
+        // Completion handles Enter first; otherwise the window continues lists or saves.
         Prec.highest(keymap.of([{ key: "Tab", run: acceptCompletion }])),
         keymap.of([
           { key: "Shift-Enter", run: insertNewline },
-          // Enter with any modifier but Shift saves, and Escape exits, in the window's handler.
+          // Non-Shift Enter and Escape are handled by the window.
           ...defaultKeymap.filter(({ key }) => !key?.endsWith("Enter") && key !== "Escape"),
           ...historyKeymap,
         ]),
@@ -287,6 +360,82 @@ export function createEditor(host: HTMLElement, options: EditorOptions): Journal
     },
     destroy: () => view.destroy(),
   };
+}
+
+function indentWidth(text: string): number {
+  let width = 0;
+  for (const char of text) width += char === "\t" ? 4 - width % 4 : 1;
+  return width;
+}
+
+function listContext(state: EditorState, at: number, tree: ReturnType<typeof syntaxTree>) {
+  const line = state.doc.lineAt(at);
+  let node = tree.resolveInner(at, at === line.from ? 1 : -1);
+  for (;;) {
+    if (node.name === "FencedCode" || node.name === "CodeBlock") return undefined;
+    if (node.name === "ListItem") {
+      const marker = node.getChild("ListMark");
+      if (!marker) return undefined;
+      const first = state.doc.lineAt(marker.from);
+      const spacing = state.sliceDoc(marker.to, first.to).match(/^[ \t]*/)?.[0] ?? "";
+      const prefix = state.sliceDoc(first.from, marker.from).replace(/[^ \t>]/g, " ");
+      const contentAt = marker.to + spacing.length;
+      if (line.number > first.number) {
+        for (let number = first.number + 1; number <= line.number; number++) {
+          if (/^[ \t>]*$/.test(state.doc.line(number).text)) return undefined;
+        }
+        const indent = line.text.match(/^[ \t>]+/)?.[0] ?? "";
+        if (indentWidth(indent) < indentWidth(state.sliceDoc(first.from, contentAt))) {
+          return undefined;
+        }
+      }
+      return { node, marker, first, line, prefix, spacing, contentAt };
+    }
+    if (!node.parent) return undefined;
+    node = node.parent;
+  }
+}
+
+/** Continues a list, or exits an empty item with a blank separator; false means normal Enter. */
+export function continueList(editor: JournalEditor): boolean {
+  const { view } = editor;
+  const { state } = view;
+  if (state.readOnly) return false;
+  const tree = ensureSyntaxTree(state, state.doc.length, 50) ??
+    commonmark.parse(state.doc.toString());
+  const contexts = state.selection.ranges.map((range) => listContext(state, range.from, tree));
+  if (!contexts.some(Boolean)) return false;
+  let index = 0;
+  const changes = state.changeByRange((range) => {
+    const context = contexts[index++];
+    if (!context) {
+      return {
+        changes: { from: range.from, to: range.to, insert: "\n" },
+        range: EditorSelection.cursor(range.from + 1),
+      };
+    }
+    const { node, marker, first, line, prefix, spacing, contentAt } = context;
+    const empty = range.empty && line.number === first.number &&
+      state.sliceDoc(contentAt, node.to).trim() === "";
+    if (empty) {
+      return {
+        changes: { from: first.from, to: first.to, insert: "\n" },
+        range: EditorSelection.cursor(first.from + 1),
+      };
+    }
+    const text = state.sliceDoc(marker.from, marker.to);
+    const ordered = /^(\d+)([.)])$/.exec(text);
+    const next = ordered ? `${Number(ordered[1]) + 1}${ordered[2]}` : text;
+    const insert = `\n${prefix}${next}${spacing || " "}`;
+    const from = Math.max(range.from, line.number === first.number ? contentAt : line.from);
+    const to = Math.max(from, range.to);
+    return {
+      changes: { from, to, insert },
+      range: EditorSelection.cursor(from + insert.length),
+    };
+  });
+  view.dispatch({ ...changes, userEvent: "input", scrollIntoView: true });
+  return true;
 }
 
 /** Whether a `[[` suggestion list is open. */

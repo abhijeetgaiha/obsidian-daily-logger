@@ -9,11 +9,25 @@ at runtime.
 
 Launch normally and type into the focused text box.
 
-- **Enter** saves and exits; **Shift+Enter** inserts a newline.
+- **Enter** saves and exits outside lists. Inside a `-`/`*`/`+` bullet list or
+  `1.`/`1)` numbered list, it creates the next item with the same indentation
+  (and the next number), including from indented continuation lines.
+  Enter on an empty item removes its marker and exits the entire list, leaving
+  a blank line before the next paragraph. A blank or whitespace-only line ends
+  list continuation. **Shift+Enter** always inserts a plain newline.
+  **Ctrl/Cmd/Alt+Enter** follows the same list-or-save behavior as Enter; it does
+  not save from inside a list.
 - **Formatting preview:** `**bold**`/`__bold__` shows in bold, `*italic*`/`_italic_`
-  in italics, `-`/`*`/`+` bullets and `1.`/`1)` numbered items get coloured markers
-  and a hanging indent, and `[[links]]` are link-coloured. The Markdown characters
-  stay visible, just dimmed, and the text saved is exactly what you typed. Other
+  in italics, `-` list markers display as bullet symbols, and `*`/`+` bullets
+  and `1.`/`1)` numbered items keep their coloured markers. Top-level markers
+  align with normal paragraph text; wrapped lines hang beneath the item text.
+  Nested items retain their indentation. `[[links]]` are link-coloured.
+  `#tags` have a separate colour,
+  including nested tags such as `#work/project`, Unicode, and emoji; headings,
+  code, escaped hashes, link references, and URL fragments are not tags.
+  Apart from rendered hyphen bullets, formatting characters stay visible, just
+  dimmed. Preview does not change the source Markdown; list Enter edits that
+  Markdown by adding or removing item markers. Other
   Markdown (headings, code, strikethrough, highlights) is shown as plain text.
 - **Note links:** typing `[[` opens a list of the vault's Markdown notes that
   narrows as you type (case-insensitive; names starting with the text first, then
@@ -52,7 +66,7 @@ Launch normally and type into the focused text box.
   shown even while the checkbox is unchecked, dimmed to show it will not be used
   until the box is ticked. When neither note exists, the note source is not
   set, or the configuration is invalid, it shows **No File Selected**. The name refreshes at startup, after
-  checkbox changes, after saving settings, and on each Enter.
+  checkbox changes, after saving settings, and on each journal save attempt.
 - The **gear** to the right of the file name opens the settings dialog for the
   standard `config.json` (see below). While it is open, the window shows only
   the dialog and grows to fit it without scrolling; drag the **Settings** title

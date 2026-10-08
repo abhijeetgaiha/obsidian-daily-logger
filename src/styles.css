@@ -10,6 +10,7 @@
   --md-mark: #9a9a9a;
   --md-list: #6d7f8f;
   --md-link: #3d6f9e;
+  --md-tag: #8850a0;
   --popup-bg: #ffffff;
   --popup-border: #c9c9c6;
   --popup-selected: #dde7f0;
@@ -226,6 +227,7 @@ input { accent-color: #537a99; }
     --md-mark: #85877f;
     --md-list: #9fb1c1;
     --md-link: #8cb8e3;
+    --md-tag: #d1a0e8;
     --popup-bg: #2e302d;
     --popup-border: #50524e;
     --popup-selected: #3d4c59;

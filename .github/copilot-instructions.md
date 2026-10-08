@@ -134,11 +134,18 @@ the installer name. Tauri merges `tauri.windows.conf.json` or
   latest draft, with a 3-second fallback preserving the last stored draft.
 - **Keyboard handling crosses the shadow boundary.** Completion handles
   Enter/Tab/Escape before the window handler; respect `defaultPrevented`.
-  Enter saves, Shift+Enter inserts a newline, and Escape preserves the draft
-  and exits unless Settings or completion is open. Ignore IME composition and
+  Non-Shift Enter (including Ctrl/Cmd/Alt+Enter) continues a list or exits an
+  empty item with a blank separator; it saves only outside lists. List
+  continuation stops at a blank line and includes nested/indented items.
+  Shift+Enter inserts a plain newline; Escape preserves the draft and exits
+  unless Settings or completion is open. Ignore IME composition and
   repeated save/exit keys. Synthetic editor key events in tests must be
   composed, bubbling, and cancelable. Formatting uses decorations, not text
-  rewriting; restoring a draft must not add it to undo history.
+  rewriting: only hyphen bullet markers display as symbols, and tags use a
+  separate light/dark color outside headings/code. List continuation is an
+  undoable text edit; restoring a draft must not add it to undo history.
+  List markers align with paragraph text; reset their own `text-indent` to zero
+  so inline-block bullets do not inherit the line's negative hanging indent.
 - **Note completion is optional and read-only.** Scan names, not note contents;
   skip dot entries and symlinked directories, cap the scan at 20,000 notes, and
   cap ranked suggestions at 100. Rust computes targets using

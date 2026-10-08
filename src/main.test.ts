@@ -1051,6 +1051,127 @@ describe("minimal journal window", () => {
   });
 });
 
+describe("list-aware keyboard handling", () => {
+  function list(entry: EntryHost, text = "- first #tag") {
+    entry.value = text;
+    entry.view.dispatch({ selection: { anchor: text.length } });
+    entry.view.focus();
+  }
+
+  it.each([
+    ["Enter", {}],
+    ["Ctrl+Enter", { ctrlKey: true }],
+    ["Cmd+Enter", { metaKey: true }],
+    ["Alt+Enter", { altKey: true }],
+  ])("%s continues a list without submitting or exiting", async (_name, options) => {
+    const { api, entry } = await setup();
+    list(entry);
+    expect(key(entry.content, "Enter", options).defaultPrevented).toBe(true);
+    await flush();
+    expect(entry.value).toBe("- first #tag\n- ");
+    expect(api.submit).not.toHaveBeenCalled();
+    expect(api.exit).not.toHaveBeenCalled();
+  });
+
+  it("exits an empty item with a gap, then saves on Enter outside the list", async () => {
+    const { api, entry } = await setup();
+    list(entry);
+    key(entry.content, "Enter");
+    key(entry.content, "Enter");
+    await flush();
+    expect(entry.value).toBe("- first #tag\n\n");
+    expect(api.submit).not.toHaveBeenCalled();
+    key(entry.content, "Enter");
+    await flush();
+    expect(api.submit).toHaveBeenCalledExactlyOnceWith("- first #tag\n\n");
+    expect(api.exit).toHaveBeenCalledOnce();
+  });
+
+  it("does not continue an earlier item across a blank separator", async () => {
+    const { api, entry } = await setup();
+    list(entry, "- first\n\n  paragraph");
+    key(entry.content, "Enter");
+    await flush();
+    expect(api.submit).toHaveBeenCalledExactlyOnceWith("- first\n\n  paragraph");
+  });
+
+  it("keeps Shift+Enter plain and ignores repeat and IME keys inside a list", async () => {
+    const { api, entry } = await setup();
+    list(entry);
+    key(entry.content, "Enter", { repeat: true });
+    key(entry.content, "Enter", { isComposing: true });
+    key(entry.content, "Enter", { keyCode: 229 });
+    expect(entry.value).toBe("- first #tag");
+    key(entry.content, "Enter", { shiftKey: true });
+    await flush();
+    expect(entry.value).toBe("- first #tag\n");
+    expect(api.submit).not.toHaveBeenCalled();
+  });
+
+  it("does not edit lists while a preference operation or Settings is active", async () => {
+    const api = mockApi();
+    let finish!: (settings: Settings) => void;
+    api.setFallback.mockReturnValue(new Promise((done) => { finish = done; }));
+    const { entry, checkbox, gear, dialog } = await setup(api);
+    list(entry);
+    checkbox.checked = true;
+    checkbox.dispatchEvent(new Event("change"));
+    await flush();
+    key(entry.content, "Enter");
+    expect(entry.value).toBe("- first #tag");
+    finish({ ...initial, use_yesterday_if_today_missing: true });
+    await flush();
+    gear.click();
+    await flush();
+    expect(dialog.hidden).toBe(false);
+    key(entry.content, "Enter");
+    expect(entry.value).toBe("- first #tag");
+    expect(api.submit).not.toHaveBeenCalled();
+  });
+
+  it("reloads an unreadable list draft before allowing list edits", async () => {
+    const api = mockApi();
+    api.loadDraft.mockRejectedValue(new Error("Unreadable"));
+    const { entry } = await setup(api);
+    api.loadDraft.mockResolvedValue("- recovered");
+    key(entry.content, "Enter");
+    await flush();
+    expect(entry.value).toBe("- recovered");
+    expect(api.submit).not.toHaveBeenCalled();
+    key(entry.content, "Enter");
+    expect(entry.value).toBe("- recovered\n- ");
+    expect(api.submit).not.toHaveBeenCalled();
+  });
+
+  it("never edits or resubmits a list after logging when closing fails", async () => {
+    const api = mockApi();
+    api.exit.mockRejectedValue(new Error("Cannot close"));
+    const { entry } = await setup(api);
+    list(entry, "- first\n\n");
+    key(entry.content, "Enter");
+    await flush();
+    const logged = entry.value;
+    entry.view.dispatch({ selection: { anchor: 7 } });
+    key(entry.content, "Enter");
+    await flush();
+    expect(entry.value).toBe(logged);
+    expect(api.submit).toHaveBeenCalledOnce();
+  });
+
+  it("autosaves and exits with source Markdown, not rendered bullet text", async () => {
+    const { api, entry } = await setupWithFakeTimers();
+    list(entry);
+    key(entry.content, "Enter");
+    await tick(AUTOSAVE_DELAY_MS);
+    expect(api.saveDraft).toHaveBeenCalledExactlyOnceWith("- first #tag\n- ");
+    expect(entry.shadowRoot!.querySelector(".cm-md-bullet")!.textContent).toBe("\u2022");
+    key(entry.content, "Escape");
+    await tick();
+    expect(api.exit).toHaveBeenCalledExactlyOnceWith("- first #tag\n- ");
+    expect(api.submit).not.toHaveBeenCalled();
+  });
+});
+
 describe("draft autosave", () => {
   it("saves 1 s after typing pauses and skips unchanged text", async () => {
     const api = mockApi();
@@ -1300,6 +1421,26 @@ describe("[[ note link suggestions", () => {
     key(entry.content, "Enter");
     await flush();
     expect(api.submit).toHaveBeenCalledExactlyOnceWith("Met with [[A/Plan]]");
+  });
+
+  it("accepts completion before continuing a list on the next Enter", async () => {
+    const { api, entry } = await setup();
+    await suggest(entry, "- Met with [[pl");
+    key(entry.content, "Enter");
+    await flush();
+    expect(entry.value).toBe("- Met with [[A/Plan]]");
+    expect(api.submit).not.toHaveBeenCalled();
+    key(entry.content, "Enter");
+    await flush();
+    expect(entry.value).toBe("- Met with [[A/Plan]]\n- ");
+    expect(api.submit).not.toHaveBeenCalled();
+    key(entry.content, "Enter");
+    await flush();
+    expect(entry.value).toBe("- Met with [[A/Plan]]\n\n");
+    expect(api.submit).not.toHaveBeenCalled();
+    key(entry.content, "Enter");
+    await flush();
+    expect(api.submit).toHaveBeenCalledExactlyOnceWith("- Met with [[A/Plan]]\n\n");
   });
 
   it("Tab and the arrow keys pick a suggestion without doubling an existing ]]", async () => {

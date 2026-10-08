@@ -2128,7 +2128,7 @@ dependencies = [
 
 [[package]]
 name = "obsidian-daily-logger"
-version = "0.11.0"
+version = "0.20.0"
 dependencies = [
  "chrono",
  "journal-core",
