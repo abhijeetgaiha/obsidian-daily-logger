@@ -54,13 +54,21 @@ Launch normally and type into the focused text box.
 - The draft **autosaves** 1 second after you stop typing (and at least every
   10 seconds while typing continuously), and immediately when the window loses
   focus. A brief **Draft saved** appears beside the file name.
-- **Use yesterday if today is missing** is initially unchecked. Changes persist
-  immediately. Today always takes priority. At launch, if today's note exists,
+- **Use yesterday** is initially unchecked and uses yesterday's note only if
+  today's is missing. Changes persist immediately. Today always takes priority.
+  At launch, if today's note exists,
   the box is unchecked and saved; tick it again if you need it.
-- **Block format** (next to it) switches the entry format and also persists
+- **Block** (next to it) switches the entry format and also persists
   immediately. Unchecked logs the inline `[1:05pm] text`; checked logs a block
   (see [Note-writing contract](#note-writing-contract)). The same choice is
   available as **Entry format** in Settings.
+- The **word count** beside these checkboxes updates as you edit or restore a
+  draft. It counts the current entry, not the daily note or selected text.
+  Unicode letters and numbers count as words; internal apostrophes and hyphens
+  stay within a word, and each Chinese, Japanese, or Korean letter counts
+  individually. Punctuation-only Markdown markers do not count. This is a
+  lexical count of the source text, not rendered Markdown or an exact replica
+  of Obsidian's counter: link targets, URLs, and code remain countable.
 - The bottom-right corner shows the daily note's file name without its path or
   extension, e.g. `2026-09-26`. If today's note is missing, yesterday's name is
   shown even while the checkbox is unchecked, dimmed to show it will not be used

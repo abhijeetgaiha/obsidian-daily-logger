@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { completionStatus, currentCompletions } from "@codemirror/autocomplete";
+import { redo, undo } from "@codemirror/commands";
 import { EditorView } from "@codemirror/view";
 import { AUTOSAVE_DELAY_MS, AUTOSAVE_MAX_WAIT_MS } from "./autosave";
 import {
@@ -103,6 +104,7 @@ async function setup(api = mockApi()) {
     entry: entryHost(root.querySelector<HTMLDivElement>("#entry")!),
     checkbox: root.querySelector<HTMLInputElement>("#fallback")!,
     blockFormat: root.querySelector<HTMLInputElement>("#block-format")!,
+    wordCount: root.querySelector<HTMLSpanElement>("#word-count")!,
     message: root.querySelector<HTMLParagraphElement>("#message")!,
     noteName: root.querySelector<HTMLSpanElement>("#note-name")!,
     gear: root.querySelector<HTMLButtonElement>("#settings")!,
@@ -178,11 +180,81 @@ function key(target: HTMLElement, key: string, options: KeyboardEventInit = {}) 
   return event;
 }
 
+describe("live word count", () => {
+  it("shows zero with compact main-window labels and preserves Settings wording", async () => {
+    const { wordCount, checkbox, blockFormat, dialogFallback } = await setup();
+    expect(wordCount.textContent).toBe("0 words");
+    expect(checkbox.parentElement!.textContent!.trim()).toBe("Use yesterday");
+    expect(checkbox.parentElement!.title).toBe("Use yesterday if today is missing");
+    expect(blockFormat.parentElement!.textContent!.trim()).toBe("Block");
+    expect(blockFormat.parentElement!.title).toBe("Log as a bold time, the text, then a --- rule");
+    expect(dialogFallback.parentElement!.textContent!.trim())
+      .toBe("Use yesterday if today is missing");
+    expect(blockFormat.parentElement!.nextElementSibling).toBe(wordCount);
+    expect(wordCount.hasAttribute("aria-live")).toBe(false);
+  });
+
+  it("updates immediately for typing, replacement, deletion, and Unicode text", async () => {
+    const { entry, wordCount, api } = await setup();
+    type(entry, "hello");
+    expect(wordCount.textContent).toBe("1 word");
+    type(entry, "hello world");
+    expect(wordCount.textContent).toBe("2 words");
+    entry.view.dispatch({
+      changes: { from: entry.value.length, insert: "\n- \u4f60\u597d" },
+      userEvent: "input.paste",
+    });
+    expect(wordCount.textContent).toBe("4 words");
+    entry.view.dispatch({ selection: { anchor: 0 } });
+    expect(wordCount.textContent).toBe("4 words");
+    type(entry, "- ** \t");
+    expect(wordCount.textContent).toBe("0 words");
+    type(entry, "");
+    expect(wordCount.textContent).toBe("0 words");
+    expect(api.saveDraft).not.toHaveBeenCalled();
+    expect(api.submit).not.toHaveBeenCalled();
+  });
+
+  it("counts restored drafts and retains the total when Settings closes", async () => {
+    const api = mockApi();
+    const text = "  don't\nforget long-term plans  ";
+    api.loadDraft.mockResolvedValue(text);
+    const { entry, wordCount, gear, cancelButton } = await setup(api);
+    expect(wordCount.textContent).toBe("4 words");
+    expect(entry.value).toBe(text);
+    expect(api.saveDraft).not.toHaveBeenCalled();
+    gear.click();
+    await flush();
+    cancelButton.click();
+    expect(wordCount.textContent).toBe("4 words");
+    expect(entry.value).toBe(text);
+  });
+
+  it("updates after undo and redo without undoing the restored draft", async () => {
+    const api = mockApi();
+    api.loadDraft.mockResolvedValue("first");
+    const { entry, wordCount } = await setup(api);
+    entry.view.dispatch({
+      changes: { from: entry.value.length, insert: " second" },
+      userEvent: "input.type",
+    });
+    expect(wordCount.textContent).toBe("2 words");
+    expect(undo(entry.view)).toBe(true);
+    expect(wordCount.textContent).toBe("1 word");
+    expect(entry.value).toBe("first");
+    expect(undo(entry.view)).toBe(false);
+    expect(redo(entry.view)).toBe(true);
+    expect(wordCount.textContent).toBe("2 words");
+    expect(entry.value).toBe("first second");
+  });
+});
+
 describe("minimal journal window", () => {
   it("focuses the draft, submits original multiline input, and exits on success", async () => {
-    const { api, entry } = await setup();
+    const { api, entry, wordCount } = await setup();
     expect(document.activeElement).toBe(entry);
     entry.value = "  first\nsecond  ";
+    expect(wordCount.textContent).toBe("2 words");
     expect(key(entry, "Enter").defaultPrevented).toBe(true);
     await flush();
     expect(api.submit).toHaveBeenCalledExactlyOnceWith("  first\nsecond  ");
@@ -267,11 +339,13 @@ describe("minimal journal window", () => {
   it("allows retrying a failed draft load without submitting it immediately", async () => {
     const api = mockApi();
     api.loadDraft.mockRejectedValue(new Error("Cannot read draft"));
-    const { entry } = await setup(api);
+    const { entry, wordCount } = await setup(api);
+    expect(wordCount.textContent).toBe("0 words");
     api.loadDraft.mockResolvedValue("recovered");
     key(entry, "Enter");
     await flush();
     expect(entry.value).toBe("recovered");
+    expect(wordCount.textContent).toBe("1 word");
     expect(entry.readOnly).toBe(false);
     expect(api.submit).not.toHaveBeenCalled();
     key(entry, "Enter");
@@ -1176,13 +1250,15 @@ describe("draft autosave", () => {
   it("saves 1 s after typing pauses and skips unchanged text", async () => {
     const api = mockApi();
     api.loadDraft.mockResolvedValue("restored");
-    const { entry, notice } = await setupWithFakeTimers(api);
+    const { entry, notice, wordCount } = await setupWithFakeTimers(api);
+    expect(wordCount.textContent).toBe("1 word");
     type(entry, "restored");
     await tick(AUTOSAVE_DELAY_MS * 2);
     expect(api.saveDraft).not.toHaveBeenCalled();
     type(entry, "restored and more");
     await tick(AUTOSAVE_DELAY_MS - 1);
     type(entry, "restored and more text");
+    expect(wordCount.textContent).toBe("4 words");
     await tick(AUTOSAVE_DELAY_MS - 1);
     expect(api.saveDraft).not.toHaveBeenCalled();
     await tick(1);
@@ -1424,19 +1500,23 @@ describe("[[ note link suggestions", () => {
   });
 
   it("accepts completion before continuing a list on the next Enter", async () => {
-    const { api, entry } = await setup();
+    const { api, entry, wordCount } = await setup();
     await suggest(entry, "- Met with [[pl");
+    expect(wordCount.textContent).toBe("3 words");
     key(entry.content, "Enter");
     await flush();
     expect(entry.value).toBe("- Met with [[A/Plan]]");
+    expect(wordCount.textContent).toBe("4 words");
     expect(api.submit).not.toHaveBeenCalled();
     key(entry.content, "Enter");
     await flush();
     expect(entry.value).toBe("- Met with [[A/Plan]]\n- ");
+    expect(wordCount.textContent).toBe("4 words");
     expect(api.submit).not.toHaveBeenCalled();
     key(entry.content, "Enter");
     await flush();
     expect(entry.value).toBe("- Met with [[A/Plan]]\n\n");
+    expect(wordCount.textContent).toBe("4 words");
     expect(api.submit).not.toHaveBeenCalled();
     key(entry.content, "Enter");
     await flush();

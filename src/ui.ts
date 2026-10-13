@@ -5,6 +5,7 @@ import {
 import { createAutosave } from "./autosave";
 import { continueList, createEditor, refreshLinkCompletion } from "./editor";
 import { mountSettingsDialog } from "./settings";
+import { countWords } from "./word-count";
 
 const AUTOSAVE_NOTICE_MS = 1500;
 /** A `[[` query reloads the note index in the background once it is older than this. */
@@ -25,14 +26,15 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
       <div id="entry"></div>
       <div class="status-row">
         <div class="toggles">
-          <label class="fallback">
+          <label class="fallback" title="Use yesterday if today is missing">
             <input id="fallback" type="checkbox" />
-            Use yesterday if today is missing
+            Use yesterday
           </label>
           <label class="toggle" title="Log as a bold time, the text, then a --- rule">
             <input id="block-format" type="checkbox" />
-            Block format
+            Block
           </label>
+          <span id="word-count">0 words</span>
         </div>
         <div class="note">
           <span id="autosave" role="status" aria-live="polite"></span>
@@ -48,6 +50,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   const entry = root.querySelector<HTMLDivElement>("#entry")!;
   const checkbox = root.querySelector<HTMLInputElement>("#fallback")!;
   const blockFormat = root.querySelector<HTMLInputElement>("#block-format")!;
+  const wordCount = root.querySelector<HTMLSpanElement>("#word-count")!;
   const noteName = root.querySelector<HTMLSpanElement>("#note-name")!;
   const autosaveNotice = root.querySelector<HTMLSpanElement>("#autosave")!;
   const gear = root.querySelector<HTMLButtonElement>("#settings")!;
@@ -68,7 +71,11 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   const editor = createEditor(entry, {
     placeholder: "Write a journal entry...",
     label: "Journal entry",
-    onChange: () => autosave.schedule(),
+    onChange() {
+      const count = countWords(editor.value());
+      wordCount.textContent = `${count} ${count === 1 ? "word" : "words"}`;
+      autosave.schedule();
+    },
     notes: () => notes,
     onLinkQuery() {
       if (!notesLoading && Date.now() - notesLoadedAt > NOTE_INDEX_MAX_AGE_MS) loadNotes();
