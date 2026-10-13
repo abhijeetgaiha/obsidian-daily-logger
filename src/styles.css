@@ -5,6 +5,7 @@
   background: #faf9f6;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+  --fallback-alert: #a22727;
   /* Editor colours; they inherit into the editor's shadow root. */
   --placeholder: #8a8a8a;
   --md-mark: #9a9a9a;
@@ -76,6 +77,9 @@ button:focus-visible { outline: 2px solid #537a99; }
   gap: 5px;
   user-select: none;
 }
+
+.fallback.today-available { color: var(--fallback-alert); }
+.fallback.today-available input { accent-color: var(--fallback-alert); }
 
 .note {
   display: flex;
@@ -231,6 +235,7 @@ input { accent-color: #537a99; }
   :root {
     color: #efefec;
     background: #242523;
+    --fallback-alert: #ffaaaa;
     --placeholder: #8d8e8a;
     --md-mark: #85877f;
     --md-list: #9fb1c1;

@@ -184,7 +184,7 @@ describe("live word count", () => {
   it("shows zero with compact main-window labels and preserves Settings wording", async () => {
     const { wordCount, checkbox, blockFormat, dialogFallback } = await setup();
     expect(wordCount.textContent).toBe("0 words");
-    expect(checkbox.parentElement!.textContent!.trim()).toBe("Use yesterday");
+    expect(checkbox.parentElement!.textContent!.trim()).toBe("Yesterday");
     expect(checkbox.parentElement!.title).toBe("Use yesterday if today is missing");
     expect(blockFormat.parentElement!.textContent!.trim()).toBe("Block");
     expect(blockFormat.parentElement!.title).toBe("Log as a bold time, the text, then a --- rule");
@@ -246,6 +246,133 @@ describe("live word count", () => {
     expect(redo(entry.view)).toBe(true);
     expect(wordCount.textContent).toBe("2 words");
     expect(entry.value).toBe("first second");
+  });
+});
+
+describe("Yesterday availability indicator", () => {
+  const yesterday = { name: "2026-09-25", is_yesterday: true };
+
+  it.each([
+    ["today, unchecked", initial.note, false, false],
+    ["today, checked", initial.note, true, true],
+    ["yesterday, checked", yesterday, true, false],
+    ["no note, checked", null, true, false],
+  ] as const)("shows the correct indicator for %s", async (_name, note, checked, warning) => {
+    const api = mockApi();
+    api.loadSettings.mockResolvedValue({ ...initial, note });
+    api.setFallback.mockImplementation(async (enabled) => ({
+      ...initial, note, use_yesterday_if_today_missing: enabled,
+    }));
+    const { checkbox } = await setup(api);
+    if (checked) {
+      checkbox.checked = true;
+      checkbox.dispatchEvent(new Event("change"));
+      await flush();
+      expect(api.setFallback).toHaveBeenCalledExactlyOnceWith(true);
+    } else {
+      expect(api.setFallback).not.toHaveBeenCalled();
+    }
+    expect(checkbox.checked).toBe(checked);
+    expect(checkbox.disabled).toBe(false);
+    expect(checkbox.parentElement!.classList.contains("today-available")).toBe(warning);
+    expect(checkbox.parentElement!.title)
+      .toBe(warning ? "Today's file exists" : "Use yesterday if today is missing");
+  });
+
+  it("clears the indicator when the user unchecks Yesterday", async () => {
+    const { checkbox, api } = await setup();
+    checkbox.checked = true;
+    checkbox.dispatchEvent(new Event("change"));
+    await flush();
+    expect(checkbox.parentElement!.classList.contains("today-available")).toBe(true);
+    checkbox.checked = false;
+    checkbox.dispatchEvent(new Event("change"));
+    await flush();
+    expect(checkbox.checked).toBe(false);
+    expect(checkbox.parentElement!.classList.contains("today-available")).toBe(false);
+    expect(checkbox.parentElement!.title).toBe("Use yesterday if today is missing");
+    expect(api.setFallback.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it("updates from Block's refreshed note without resetting the selected preference", async () => {
+    const api = mockApi();
+    const saved = { ...initial, note: yesterday, use_yesterday_if_today_missing: true };
+    api.loadSettings.mockResolvedValue(saved);
+    api.setEntryFormat.mockResolvedValueOnce({
+      ...saved, note: initial.note, entry_format: "block",
+    }).mockResolvedValueOnce(saved);
+    const { checkbox, blockFormat } = await setup(api);
+    expect(checkbox.parentElement!.classList.contains("today-available")).toBe(false);
+    blockFormat.checked = true;
+    blockFormat.dispatchEvent(new Event("change"));
+    await flush();
+    expect(checkbox.checked).toBe(true);
+    expect(blockFormat.checked).toBe(true);
+    expect(checkbox.parentElement!.classList.contains("today-available")).toBe(true);
+    expect(checkbox.parentElement!.title).toBe("Today's file exists");
+    blockFormat.checked = false;
+    blockFormat.dispatchEvent(new Event("change"));
+    await flush();
+    expect(checkbox.checked).toBe(true);
+    expect(checkbox.parentElement!.classList.contains("today-available")).toBe(false);
+    expect(checkbox.parentElement!.title).toBe("Use yesterday if today is missing");
+    expect(api.setFallback).not.toHaveBeenCalled();
+  });
+
+  it("updates after failed save attempts and clears when note status becomes unknown", async () => {
+    const api = mockApi();
+    const saved = { ...initial, note: yesterday, use_yesterday_if_today_missing: true };
+    api.loadSettings.mockResolvedValue(saved);
+    api.submit.mockRejectedValue(new Error("Cannot write note"));
+    const { entry, checkbox } = await setup(api);
+    entry.value = "my draft";
+    for (const [note, warning] of [[initial.note, true], [yesterday, false], [null, false]] as const) {
+      api.loadSettings.mockResolvedValue({ ...saved, note });
+      key(entry, "Enter");
+      await flush();
+      expect(checkbox.checked).toBe(true);
+      expect(checkbox.parentElement!.classList.contains("today-available")).toBe(warning);
+      expect(checkbox.parentElement!.title)
+        .toBe(warning ? "Today's file exists" : "Use yesterday if today is missing");
+    }
+    api.loadSettings.mockResolvedValue({ ...saved, note: initial.note });
+    key(entry, "Enter");
+    await flush();
+    expect(checkbox.parentElement!.classList.contains("today-available")).toBe(true);
+    api.loadSettings.mockRejectedValue(new Error("Cannot read settings"));
+    key(entry, "Enter");
+    await flush();
+    expect(checkbox.checked).toBe(true);
+    expect(checkbox.parentElement!.classList.contains("today-available")).toBe(false);
+    expect(checkbox.parentElement!.title).toBe("Use yesterday if today is missing");
+    expect(entry.value).toBe("my draft");
+    expect(api.setFallback).not.toHaveBeenCalled();
+  });
+
+  it("refreshes after Settings saves while retaining the selected preference", async () => {
+    const api = mockApi();
+    const saved = { ...initial, note: yesterday, use_yesterday_if_today_missing: true };
+    api.loadSettings.mockResolvedValue(saved);
+    api.readSettingsForm.mockResolvedValue({
+      ...validForm, form: { ...validForm.form, use_yesterday_if_today_missing: true },
+    });
+    api.saveSettings.mockResolvedValueOnce({ ...saved, note: initial.note })
+      .mockResolvedValueOnce(saved);
+    const { checkbox, saveButton, gear } = await openSettings(api);
+    saveButton.click();
+    await flush();
+    expect(checkbox.checked).toBe(true);
+    expect(checkbox.parentElement!.classList.contains("today-available")).toBe(true);
+    expect(checkbox.parentElement!.title).toBe("Today's file exists");
+    gear.click();
+    await flush();
+    saveButton.click();
+    await flush();
+    expect(checkbox.checked).toBe(true);
+    expect(checkbox.parentElement!.classList.contains("today-available")).toBe(false);
+    expect(checkbox.parentElement!.title).toBe("Use yesterday if today is missing");
+    expect(api.setFallback).not.toHaveBeenCalled();
+    expect(api.saveSettings).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -409,6 +536,7 @@ describe("minimal journal window", () => {
     expect(api.setFallback).toHaveBeenCalledExactlyOnceWith(false);
     expect(checkbox.checked).toBe(false);
     expect(checkbox.disabled).toBe(false);
+    expect(checkbox.parentElement!.classList.contains("today-available")).toBe(false);
     expect(message.textContent).toBe("");
     checkbox.checked = true;
     checkbox.dispatchEvent(new Event("change"));
@@ -420,6 +548,8 @@ describe("minimal journal window", () => {
     await flush();
     expect(api.setFallback).toHaveBeenCalledTimes(2);
     expect(checkbox.checked).toBe(true);
+    expect(checkbox.parentElement!.classList.contains("today-available")).toBe(true);
+    expect(checkbox.parentElement!.title).toBe("Today's file exists");
   });
 
   it("leaves the fallback alone at launch without today's note or when it is off", async () => {
@@ -444,6 +574,8 @@ describe("minimal journal window", () => {
     const { checkbox, message } = await setup(api);
     expect(checkbox.checked).toBe(true);
     expect(checkbox.disabled).toBe(false);
+    expect(checkbox.parentElement!.classList.contains("today-available")).toBe(true);
+    expect(checkbox.parentElement!.title).toBe("Today's file exists");
     expect(message.textContent).toBe("Read-only config");
     expect(message.className).toBe("error");
   });

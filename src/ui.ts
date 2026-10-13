@@ -28,7 +28,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
         <div class="toggles">
           <label class="fallback" title="Use yesterday if today is missing">
             <input id="fallback" type="checkbox" />
-            Use yesterday
+            Yesterday
           </label>
           <label class="toggle" title="Log as a bold time, the text, then a --- rule">
             <input id="block-format" type="checkbox" />
@@ -49,6 +49,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   const journal = root.querySelector<HTMLDivElement>("#journal")!;
   const entry = root.querySelector<HTMLDivElement>("#entry")!;
   const checkbox = root.querySelector<HTMLInputElement>("#fallback")!;
+  const fallbackLabel = checkbox.closest("label")!;
   const blockFormat = root.querySelector<HTMLInputElement>("#block-format")!;
   const wordCount = root.querySelector<HTMLSpanElement>("#word-count")!;
   const noteName = root.querySelector<HTMLSpanElement>("#note-name")!;
@@ -140,6 +141,9 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     journal.hidden = dialog.isOpen;
     checkbox.checked = settings?.use_yesterday_if_today_missing ?? false;
     blockFormat.checked = settings?.entry_format === "block";
+    const fallbackWarning = checkbox.checked && note?.is_yesterday === false;
+    fallbackLabel.classList.toggle("today-available", fallbackWarning);
+    fallbackLabel.title = fallbackWarning ? "Today's file exists" : "Use yesterday if today is missing";
     const inactive = note?.is_yesterday === true && !checkbox.checked;
     noteName.textContent = note?.name ?? "No File Selected";
     noteName.classList.toggle("inactive", inactive);

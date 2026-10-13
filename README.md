@@ -54,10 +54,13 @@ Launch normally and type into the focused text box.
 - The draft **autosaves** 1 second after you stop typing (and at least every
   10 seconds while typing continuously), and immediately when the window loses
   focus. A brief **Draft saved** appears beside the file name.
-- **Use yesterday** is initially unchecked and uses yesterday's note only if
+- **Yesterday** is initially unchecked and uses yesterday's note only if
   today's is missing. Changes persist immediately. Today always takes priority.
   At launch, if today's note exists,
   the box is unchecked and saved; tick it again if you need it.
+  Selections made during use are not automatically reset. If today's note exists
+  and the box is checked, its label and checkbox turn red with the tooltip
+  **Today's file exists**; you can uncheck it yourself.
 - **Block** (next to it) switches the entry format and also persists
   immediately. Unchecked logs the inline `[1:05pm] text`; checked logs a block
   (see [Note-writing contract](#note-writing-contract)). The same choice is
