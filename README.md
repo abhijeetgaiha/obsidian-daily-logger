@@ -61,11 +61,11 @@ Launch normally and type into the focused text box.
   Selections made during use are not automatically reset. If today's note exists
   and the box is checked, its label and checkbox turn red with the tooltip
   **Today's file exists**; you can uncheck it yourself.
-- **Block** (next to it) switches the entry format and also persists
-  immediately. Unchecked logs the inline `[1:05pm] text`; checked logs a block
+- The **Inline/Block dropdown** (next to Yesterday) switches the entry format
+  and persists immediately. **Inline** logs `[1:05pm] text`; **Block** logs a block
   (see [Note-writing contract](#note-writing-contract)). The same choice is
   available as **Entry format** in Settings.
-- The **word count** beside these checkboxes updates as you edit or restore a
+- The **word count** beside these controls updates as you edit or restore a
   draft. It counts the current entry, not the daily note or selected text.
   Unicode letters and numbers count as words; internal apostrophes and hyphens
   stay within a word, and each Chinese, Japanese, or Korean letter counts
@@ -77,13 +77,13 @@ Launch normally and type into the focused text box.
   shown even while the checkbox is unchecked, dimmed to show it will not be used
   until the box is ticked. When neither note exists, the note source is not
   set, or the configuration is invalid, it shows **No File Selected**. The name refreshes at startup, after
-  checkbox changes, after saving settings, and on each journal save attempt.
+  preference changes, after saving settings, and on each journal save attempt.
 - The **gear** to the right of the file name opens the settings dialog for the
   standard `config.json` (see below). While it is open, the window shows only
   the dialog and grows to fit it without scrolling; drag the **Settings** title
   to move it. Escape or Cancel closes the dialog, returning the window to its
   normal size, without exiting; Enter does not log the entry while it is open.
-- Errors retain the draft. Failed preference writes restore the saved checkbox.
+- Errors retain the draft. Failed preference writes restore the saved control value.
   Any configuration problem (missing or invalid `config.json`, vault, or
   daily-notes plugin settings) shows just **Config error!**; open the gear to
   see the details and fix them. Other errors, such as a missing daily note or
@@ -175,7 +175,7 @@ On macOS, use the absolute POSIX path to the vault. Paths are literal:
 directory if needed. The app never chooses a default vault, and it replaces
 malformed configuration only when you save from the settings dialog. Unknown
 fields and wrong types are rejected. Configurations without `note_source` (written by 0.7.0 and earlier)
-still load, and the checkboxes and draft keep working, but logging and the file
+still load, and the controls and draft keep working, but logging and the file
 name report that the source must be chosen in Settings; the app never writes it
 on its own. Optional fields: `heading` defaults to `""`
 (end of file), `duplicate_heading` to `"error"` (or `"first"`/`"last"`),
@@ -185,10 +185,10 @@ therefore append to the end of the note until a heading is set. A hand-edited
 `heading` may be any Markdown heading (1–6 `#`, a space, then text), even one
 not in today's note.
 
-Configuration reloads before every save and checkbox change. Correct the file
+Configuration reloads before every save and preference change. Correct the file
 (externally or with the gear) and press Enter to retry without losing your draft.
-Checkbox changes and the settings dialog rewrite the JSON without preserving
-formatting; the checkbox keeps the configured root and heading. Keep personal
+Preference changes and the settings dialog rewrite the JSON without preserving
+formatting; the main controls keep the configured root and heading. Keep personal
 configuration and notes outside the source repository.
 
 ### Finding the daily note

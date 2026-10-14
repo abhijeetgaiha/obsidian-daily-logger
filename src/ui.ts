@@ -1,6 +1,6 @@
 import {
-  errorMessage, isConfigError, WINDOW_HEIGHT, type JournalApi, type NoteLabel, type NoteLink,
-  type Settings,
+  errorMessage, isConfigError, WINDOW_HEIGHT, type EntryFormat, type JournalApi, type NoteLabel,
+  type NoteLink, type Settings,
 } from "./api";
 import { createAutosave } from "./autosave";
 import { continueList, createEditor, refreshLinkCompletion } from "./editor";
@@ -30,10 +30,10 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
             <input id="fallback" type="checkbox" />
             Yesterday
           </label>
-          <label class="toggle" title="Log as a bold time, the text, then a --- rule">
-            <input id="block-format" type="checkbox" />
-            Block
-          </label>
+          <select id="entry-format" aria-label="Entry format" title="Entry format">
+            <option value="inline">Inline</option>
+            <option value="block">Block</option>
+          </select>
           <span id="word-count">0 words</span>
         </div>
         <div class="note">
@@ -50,7 +50,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   const entry = root.querySelector<HTMLDivElement>("#entry")!;
   const checkbox = root.querySelector<HTMLInputElement>("#fallback")!;
   const fallbackLabel = checkbox.closest("label")!;
-  const blockFormat = root.querySelector<HTMLInputElement>("#block-format")!;
+  const formatSelect = root.querySelector<HTMLSelectElement>("#entry-format")!;
   const wordCount = root.querySelector<HTMLSpanElement>("#word-count")!;
   const noteName = root.querySelector<HTMLSpanElement>("#note-name")!;
   const autosaveNotice = root.querySelector<HTMLSpanElement>("#autosave")!;
@@ -135,12 +135,12 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     const blocked = busy || dialog.isOpen;
     editor.setReadOnly(blocked || !draftLoaded || savedPath !== undefined);
     checkbox.disabled = blocked || settings === undefined || savedPath !== undefined;
-    blockFormat.disabled = checkbox.disabled;
+    formatSelect.disabled = checkbox.disabled;
     gear.disabled = blocked || savedPath !== undefined;
     journal.toggleAttribute("inert", dialog.isOpen);
     journal.hidden = dialog.isOpen;
     checkbox.checked = settings?.use_yesterday_if_today_missing ?? false;
-    blockFormat.checked = settings?.entry_format === "block";
+    formatSelect.value = settings?.entry_format ?? "inline";
     const fallbackWarning = checkbox.checked && note?.is_yesterday === false;
     fallbackLabel.classList.toggle("today-available", fallbackWarning);
     fallbackLabel.title = fallbackWarning ? "Today's file exists" : "Use yesterday if today is missing";
@@ -258,11 +258,11 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   }
 
   async function changeEntryFormat() {
-    const format = blockFormat.checked ? "block" : "inline";
+    const format = formatSelect.value as EntryFormat;
     await changeSetting(() => api.setEntryFormat(format));
   }
 
-  // Callers read the new value before this runs, because render() restores both checkboxes.
+  // Callers read the new value before this runs, because render() restores the controls.
   async function changeSetting(apply: () => Promise<Settings>) {
     if (busy || dialog.isOpen || savedPath !== undefined) return;
     busy = true;
@@ -343,7 +343,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
 
   window.addEventListener("blur", onBlur);
   checkbox.addEventListener("change", changeFallback);
-  blockFormat.addEventListener("change", changeEntryFormat);
+  formatSelect.addEventListener("change", changeEntryFormat);
   gear.addEventListener("click", openSettings);
   dragArea.addEventListener("pointerdown", startDragging);
   window.addEventListener("keydown", onKeyDown);
@@ -381,7 +381,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     window.removeEventListener("blur", onBlur);
     window.removeEventListener("keydown", onKeyDown);
     checkbox.removeEventListener("change", changeFallback);
-    blockFormat.removeEventListener("change", changeEntryFormat);
+    formatSelect.removeEventListener("change", changeEntryFormat);
     gear.removeEventListener("click", openSettings);
     dialog.destroy();
     editor.destroy();

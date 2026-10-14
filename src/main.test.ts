@@ -103,7 +103,7 @@ async function setup(api = mockApi()) {
     api,
     entry: entryHost(root.querySelector<HTMLDivElement>("#entry")!),
     checkbox: root.querySelector<HTMLInputElement>("#fallback")!,
-    blockFormat: root.querySelector<HTMLInputElement>("#block-format")!,
+    formatSelect: root.querySelector<HTMLSelectElement>("#entry-format")!,
     wordCount: root.querySelector<HTMLSpanElement>("#word-count")!,
     message: root.querySelector<HTMLParagraphElement>("#message")!,
     noteName: root.querySelector<HTMLSpanElement>("#note-name")!,
@@ -181,16 +181,19 @@ function key(target: HTMLElement, key: string, options: KeyboardEventInit = {}) 
 }
 
 describe("live word count", () => {
-  it("shows zero with compact main-window labels and preserves Settings wording", async () => {
-    const { wordCount, checkbox, blockFormat, dialogFallback } = await setup();
+  it("shows zero with compact main-window controls and preserves Settings wording", async () => {
+    const { wordCount, checkbox, formatSelect, dialogFallback } = await setup();
     expect(wordCount.textContent).toBe("0 words");
     expect(checkbox.parentElement!.textContent!.trim()).toBe("Yesterday");
     expect(checkbox.parentElement!.title).toBe("Use yesterday if today is missing");
-    expect(blockFormat.parentElement!.textContent!.trim()).toBe("Block");
-    expect(blockFormat.parentElement!.title).toBe("Log as a bold time, the text, then a --- rule");
+    expect(formatSelect.tagName).toBe("SELECT");
+    expect(formatSelect.getAttribute("aria-label")).toBe("Entry format");
+    expect([...formatSelect.options].map((option) => [option.value, option.textContent]))
+      .toEqual([["inline", "Inline"], ["block", "Block"]]);
     expect(dialogFallback.parentElement!.textContent!.trim())
       .toBe("Use yesterday if today is missing");
-    expect(blockFormat.parentElement!.nextElementSibling).toBe(wordCount);
+    expect(checkbox.parentElement!.nextElementSibling).toBe(formatSelect);
+    expect(formatSelect.nextElementSibling).toBe(wordCount);
     expect(wordCount.hasAttribute("aria-live")).toBe(false);
   });
 
@@ -294,24 +297,24 @@ describe("Yesterday availability indicator", () => {
     expect(api.setFallback.mock.calls).toEqual([[true], [false]]);
   });
 
-  it("updates from Block's refreshed note without resetting the selected preference", async () => {
+  it("updates from the format's refreshed note without resetting the selected preference", async () => {
     const api = mockApi();
     const saved = { ...initial, note: yesterday, use_yesterday_if_today_missing: true };
     api.loadSettings.mockResolvedValue(saved);
     api.setEntryFormat.mockResolvedValueOnce({
       ...saved, note: initial.note, entry_format: "block",
     }).mockResolvedValueOnce(saved);
-    const { checkbox, blockFormat } = await setup(api);
+    const { checkbox, formatSelect } = await setup(api);
     expect(checkbox.parentElement!.classList.contains("today-available")).toBe(false);
-    blockFormat.checked = true;
-    blockFormat.dispatchEvent(new Event("change"));
+    formatSelect.value = "block";
+    formatSelect.dispatchEvent(new Event("change"));
     await flush();
     expect(checkbox.checked).toBe(true);
-    expect(blockFormat.checked).toBe(true);
+    expect(formatSelect.value).toBe("block");
     expect(checkbox.parentElement!.classList.contains("today-available")).toBe(true);
     expect(checkbox.parentElement!.title).toBe("Today's file exists");
-    blockFormat.checked = false;
-    blockFormat.dispatchEvent(new Event("change"));
+    formatSelect.value = "inline";
+    formatSelect.dispatchEvent(new Event("change"));
     await flush();
     expect(checkbox.checked).toBe(true);
     expect(checkbox.parentElement!.classList.contains("today-available")).toBe(false);
@@ -593,46 +596,100 @@ describe("minimal journal window", () => {
     expect(message.textContent).toBe("Read-only config");
   });
 
-  it("persists the block format toggle and rolls it back on failure", async () => {
+  it("persists the selected format, rolls it back on failure, and restores it on launch", async () => {
     const api = mockApi();
-    const { blockFormat, checkbox, entry } = await setup(api);
-    expect(blockFormat.checked).toBe(false);
-    expect(blockFormat.disabled).toBe(false);
-    blockFormat.checked = true;
-    blockFormat.dispatchEvent(new Event("change"));
+    const { formatSelect, checkbox, entry, message } = await setup(api);
+    const text = "  draft\ntext  ";
+    entry.value = text;
+    expect(formatSelect.value).toBe("inline");
+    expect(formatSelect.disabled).toBe(false);
+    formatSelect.value = "block";
+    formatSelect.dispatchEvent(new Event("change"));
     await flush();
     expect(api.setEntryFormat).toHaveBeenCalledExactlyOnceWith("block");
     expect(api.setFallback).not.toHaveBeenCalled();
-    expect(blockFormat.checked).toBe(true);
+    expect(formatSelect.value).toBe("block");
     expect(checkbox.checked).toBe(false);
     expect(document.activeElement).toBe(entry);
     api.setEntryFormat.mockRejectedValueOnce(new Error("Read-only config"));
-    blockFormat.checked = false;
-    blockFormat.dispatchEvent(new Event("change"));
+    formatSelect.value = "inline";
+    formatSelect.dispatchEvent(new Event("change"));
     await flush();
     expect(api.setEntryFormat).toHaveBeenLastCalledWith("inline");
-    expect(blockFormat.checked).toBe(true);
+    expect(formatSelect.value).toBe("block");
+    expect(message.textContent).toBe("Read-only config");
+    expect(entry.value).toBe(text);
+    formatSelect.value = "inline";
+    formatSelect.dispatchEvent(new Event("change"));
+    await flush();
+    expect(formatSelect.value).toBe("inline");
+    expect(api.setEntryFormat.mock.calls).toEqual([["block"], ["inline"], ["inline"]]);
+    expect(api.setFallback).not.toHaveBeenCalled();
+    expect(entry.value).toBe(text);
     cleanups.pop()?.();
     document.body.replaceChildren();
     api.loadSettings.mockResolvedValue({ ...initial, entry_format: "block" });
-    expect((await setup(api)).blockFormat.checked).toBe(true);
+    expect((await setup(api)).formatSelect.value).toBe("block");
   });
 
-  it("disables the block format toggle during a write and without settings", async () => {
+  it("disables the format dropdown during a write, after saving, and without settings", async () => {
     const api = mockApi();
     let resolve!: (result: SavedEntry) => void;
     api.submit.mockReturnValue(new Promise((done) => { resolve = done; }));
-    const { entry, blockFormat } = await setup(api);
+    const { entry, formatSelect } = await setup(api);
     key(entry, "Enter");
     await flush();
-    expect(blockFormat.disabled).toBe(true);
+    expect(formatSelect.disabled).toBe(true);
     resolve({ note_path: "today.md" });
     await flush();
-    expect(blockFormat.disabled).toBe(true);
+    expect(formatSelect.disabled).toBe(true);
     cleanups.pop()?.();
     document.body.replaceChildren();
     api.loadSettings.mockRejectedValue(new Error("bad config"));
-    expect((await setup(api)).blockFormat.disabled).toBe(true);
+    const view = await setup(api);
+    expect(view.formatSelect.disabled).toBe(true);
+    expect(view.formatSelect.value).toBe("inline");
+  });
+
+  it("disables the format dropdown during startup, a preference write, and Settings", async () => {
+    const api = mockApi();
+    let load!: (settings: Settings) => void;
+    let save!: (settings: Settings) => void;
+    api.loadSettings.mockReturnValue(new Promise((resolve) => { load = resolve; }));
+    api.setEntryFormat.mockReturnValue(new Promise((resolve) => { save = resolve; }));
+    const { formatSelect, gear, cancelButton, entry } = await setup(api);
+    expect(formatSelect.disabled).toBe(true);
+    load({ ...initial, entry_format: "block" });
+    await flush();
+    expect(formatSelect.disabled).toBe(false);
+    expect(formatSelect.value).toBe("block");
+    formatSelect.value = "inline";
+    formatSelect.dispatchEvent(new Event("change"));
+    await flush();
+    expect(formatSelect.disabled).toBe(true);
+    expect(entry.readOnly).toBe(true);
+    key(entry, "Enter");
+    key(entry, "Escape");
+    expect(api.submit).not.toHaveBeenCalled();
+    expect(api.exit).not.toHaveBeenCalled();
+    save(initial);
+    await flush();
+    expect(formatSelect.disabled).toBe(false);
+    expect(formatSelect.value).toBe("inline");
+    gear.click();
+    await flush();
+    expect(formatSelect.disabled).toBe(true);
+    cancelButton.click();
+    expect(formatSelect.disabled).toBe(false);
+  });
+
+  it("does not submit the journal when Enter targets the format dropdown", async () => {
+    const { formatSelect, api } = await setup();
+    expect(key(formatSelect, "Enter").defaultPrevented).toBe(false);
+    await flush();
+    expect(api.submit).not.toHaveBeenCalled();
+    expect(api.exit).not.toHaveBeenCalled();
+    expect(api.setEntryFormat).not.toHaveBeenCalled();
   });
 
   it("does not race a pending preference write with a save", async () => {
@@ -1145,11 +1202,11 @@ describe("minimal journal window", () => {
     expect(document.activeElement).toBe(entry);
   });
 
-  it("saves the entry format from the dialog and updates the main toggle", async () => {
+  it("saves the entry format from the dialog and updates the main dropdown", async () => {
     const api = mockApi();
-    const { entryFormat, saveButton, blockFormat } = await openSettings(api);
+    const { entryFormat, saveButton, formatSelect } = await openSettings(api);
     expect(entryFormat.value).toBe("inline");
-    expect(blockFormat.checked).toBe(false);
+    expect(formatSelect.value).toBe("inline");
     entryFormat.value = "block";
     entryFormat.dispatchEvent(new Event("change"));
     saveButton.click();
@@ -1157,7 +1214,7 @@ describe("minimal journal window", () => {
     expect(api.saveSettings).toHaveBeenCalledExactlyOnceWith({
       ...validForm.form, entry_format: "block",
     });
-    expect(blockFormat.checked).toBe(true);
+    expect(formatSelect.value).toBe("block");
     expect(api.setEntryFormat).not.toHaveBeenCalled();
   });
 
@@ -1503,6 +1560,41 @@ describe("draft autosave", () => {
     finish();
     await tick();
     expect(other.exit).toHaveBeenCalledExactlyOnceWith("escaping");
+  });
+
+  it("waits for in-flight autosave before changing format and blocks competing actions", async () => {
+    const api = mockApi();
+    let finishDraft!: () => void;
+    let finishFormat!: (settings: Settings) => void;
+    api.saveDraft.mockReturnValue(new Promise((resolve) => { finishDraft = resolve; }));
+    api.setEntryFormat.mockReturnValue(new Promise((resolve) => { finishFormat = resolve; }));
+    const { entry, formatSelect } = await setupWithFakeTimers(api);
+    const text = "  draft during autosave\n  ";
+    type(entry, text);
+    await tick(AUTOSAVE_DELAY_MS);
+    expect(api.saveDraft).toHaveBeenCalledExactlyOnceWith(text);
+    formatSelect.value = "block";
+    formatSelect.dispatchEvent(new Event("change"));
+    await tick();
+    expect(formatSelect.disabled).toBe(true);
+    expect(api.setEntryFormat).not.toHaveBeenCalled();
+    key(entry, "Enter");
+    key(entry, "Escape");
+    expect(api.submit).not.toHaveBeenCalled();
+    expect(api.exit).not.toHaveBeenCalled();
+    finishDraft();
+    await tick();
+    expect(api.setEntryFormat).toHaveBeenCalledExactlyOnceWith("block");
+    expect(formatSelect.disabled).toBe(true);
+    finishFormat({ ...initial, entry_format: "block" });
+    await tick();
+    expect(formatSelect.disabled).toBe(false);
+    expect(formatSelect.value).toBe("block");
+    expect(entry.value).toBe(text);
+    expect(document.activeElement).toBe(entry);
+    expect(api.setFallback).not.toHaveBeenCalled();
+    await tick(AUTOSAVE_MAX_WAIT_MS);
+    expect(api.saveDraft).toHaveBeenCalledOnce();
   });
 
   it("retries quietly when the backend is busy", async () => {

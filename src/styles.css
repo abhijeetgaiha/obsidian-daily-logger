@@ -51,6 +51,7 @@ body { margin: 0; }
 }
 
 input:focus-visible,
+#entry-format:focus-visible,
 button:focus-visible { outline: 2px solid #537a99; }
 
 .status-row {
@@ -69,13 +70,18 @@ button:focus-visible { outline: 2px solid #537a99; }
   gap: 12px;
 }
 
-.fallback,
-.toggle {
+.fallback {
   display: flex;
   flex: none;
   align-items: center;
   gap: 5px;
   user-select: none;
+}
+
+#entry-format {
+  flex: none;
+  height: 22px;
+  font: inherit;
 }
 
 .fallback.today-available { color: var(--fallback-alert); }
