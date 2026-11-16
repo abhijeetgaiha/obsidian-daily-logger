@@ -86,7 +86,7 @@ impl Session {
         if self.saved {
             Err(AppError::new(
                 "already_saved",
-                "This entry was already saved. Close the window.",
+                "This entry was already saved. Press Enter to reset or Escape to close.",
             ))
         } else {
             Ok(())
@@ -96,6 +96,19 @@ impl Session {
     fn save_draft(&self, path: &Path, text: &str) -> Result<(), AppError> {
         self.check_writable()?;
         draft::save(path, text)
+    }
+
+    fn reset(&mut self, path: &Path, text: &str) -> Result<(), AppError> {
+        self.check_active()?;
+        if !self.saved && !journal_core::trim_entry(text).is_empty() {
+            return Err(AppError::new(
+                "unsaved_entry",
+                "Save the current entry before resetting.",
+            ));
+        }
+        draft::clear(path)?;
+        self.saved = false;
+        Ok(())
     }
 
     fn save_settings(
@@ -115,6 +128,9 @@ impl Session {
         text: &str,
     ) -> Result<SavedEntry, AppError> {
         self.check_writable()?;
+        if journal_core::trim_entry(text).is_empty() {
+            return Err(journal_core::LogError::EmptyEntry.into());
+        }
         let config = config::load(path)?;
         let layout = config.layout()?;
         let note = journal_core::append_entry(
@@ -290,6 +306,11 @@ pub async fn submit_entry(
     .await
 }
 
+#[tauri::command]
+pub async fn reset_session(state: State<'_, AppState>, text: String) -> Result<(), AppError> {
+    operate(&state, move |session, path| session.reset(path, &text)).await
+}
+
 pub fn exit(app: &AppHandle, state: &AppState) -> Result<(), AppError> {
     lock_session(&state.session)?.prepare_exit(&state.config_path, None)?;
     app.exit(0);
@@ -385,11 +406,76 @@ mod tests {
             session.save(&path, &moment, "draft").unwrap_err().code,
             "already_saved"
         );
-        assert_eq!(fs::read(note).unwrap(), b"# Journal\n\n[1:02am] draft\n");
+        assert_eq!(fs::read(&note).unwrap(), b"# Journal\n\n[1:02am] draft\n");
+        session.reset(&path, "draft").unwrap();
+        assert!(!session.saved);
+        assert_eq!(draft::load(&path).unwrap(), "");
+        let today_note = config::test_support::note_path(root.path(), moment.date_naive());
+        fs::write(&today_note, b"# Today\n").unwrap();
+        config::set_entry_format(&path, EntryFormat::Block, moment.date_naive()).unwrap();
+        session.save_draft(&path, "second").unwrap();
+        session.save(&path, &moment, "second").unwrap();
+        assert_eq!(fs::read(&note).unwrap(), b"# Journal\n\n[1:02am] draft\n");
+        assert_eq!(
+            fs::read(&today_note).unwrap(),
+            b"# Today\n\n**1:02am**\nsecond\n\n---\n"
+        );
         session
             .prepare_exit(&path, Some("must not restore a logged entry"))
             .unwrap();
         assert_eq!(draft::load(&path).unwrap(), "");
+    }
+
+    #[test]
+    fn reset_retries_cleanup_without_reopening_a_saved_entry_early() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.json");
+        let draft_path = path.with_file_name("draft.txt");
+        fs::create_dir(&draft_path).unwrap();
+        let mut session = Session {
+            saved: true,
+            ..Default::default()
+        };
+        assert_eq!(session.reset(&path, "logged").unwrap_err().code, "draft_io");
+        assert!(session.saved);
+        assert_eq!(session.check_writable().unwrap_err().code, "already_saved");
+        fs::remove_dir(&draft_path).unwrap();
+        session.reset(&path, "logged").unwrap();
+        session.save_draft(&path, "next entry").unwrap();
+        assert_eq!(draft::load(&path).unwrap(), "next entry");
+    }
+
+    #[test]
+    fn empty_entries_reset_without_configuration_but_unsaved_text_and_exit_are_protected() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.json");
+        fs::write(&path, "invalid config").unwrap();
+        let mut session = Session::default();
+        let moment = FixedOffset::east_opt(0)
+            .unwrap()
+            .with_ymd_and_hms(2026, 9, 22, 1, 2, 0)
+            .unwrap();
+        for text in ["", " \t\r\n", "\u{0085}\u{1c}\u{1f}", "\u{2003}"] {
+            session.save_draft(&path, text).unwrap();
+            assert_eq!(
+                session.save(&path, &moment, text).unwrap_err().code,
+                "empty_entry"
+            );
+            session.reset(&path, text).unwrap();
+            assert!(!session.saved);
+            assert!(!path.with_file_name("draft.txt").exists());
+        }
+        session.save_draft(&path, "keep me").unwrap();
+        for text in ["keep me", "\u{feff}"] {
+            assert_eq!(
+                session.reset(&path, text).unwrap_err().code,
+                "unsaved_entry"
+            );
+            assert_eq!(draft::load(&path).unwrap(), "keep me");
+        }
+        session.exiting = true;
+        assert_eq!(session.reset(&path, "").unwrap_err().code, "exiting");
+        assert_eq!(draft::load(&path).unwrap(), "keep me");
     }
 
     #[test]

@@ -19,6 +19,7 @@
     "allow-pick-vault-folder",
     "allow-save-settings",
     "allow-submit-entry",
+    "allow-reset-session",
     "allow-request-exit"
   ]
 }

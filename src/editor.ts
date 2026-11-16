@@ -34,6 +34,7 @@ export interface JournalEditor {
   readonly view: EditorView;
   value(): string;
   setValue(text: string): void;
+  reset(): void;
   setReadOnly(readOnly: boolean): void;
   focus(): void;
   moveCursorToEnd(): void;
@@ -303,42 +304,43 @@ export function createEditor(host: HTMLElement, options: EditorOptions): Journal
   const readOnly = new Compartment();
   const readOnlyState = (value: boolean) =>
     [EditorState.readOnly.of(value), EditorView.editable.of(!value)];
+  const createState = () => EditorState.create({
+    extensions: [
+      history(),
+      markdownLanguage.extension,
+      markdownFormatting,
+      EditorView.lineWrapping,
+      placeholder(options.placeholder),
+      EditorView.contentAttributes.of({
+        "aria-label": options.label,
+        spellcheck: "true",
+        autocorrect: "on",
+        autocapitalize: "sentences",
+      }),
+      autocompletion({
+        override: [wikiLinkSource(options)],
+        icons: false,
+        maxRenderedOptions: MAX_SUGGESTIONS,
+      }),
+      // Completion handles Enter first; otherwise the window continues lists or saves.
+      Prec.highest(keymap.of([{ key: "Tab", run: acceptCompletion }])),
+      keymap.of([
+        { key: "Shift-Enter", run: insertNewline },
+        // Non-Shift Enter and Escape are handled by the window.
+        ...defaultKeymap.filter(({ key }) => !key?.endsWith("Enter") && key !== "Escape"),
+        ...historyKeymap,
+      ]),
+      readOnly.of(readOnlyState(true)),
+      journalTheme,
+      EditorView.updateListener.of((update) => {
+        if (update.docChanged) options.onChange();
+      }),
+    ],
+  });
   const view = new EditorView({
     root: shadow,
     parent: shadow,
-    state: EditorState.create({
-      extensions: [
-        history(),
-        markdownLanguage.extension,
-        markdownFormatting,
-        EditorView.lineWrapping,
-        placeholder(options.placeholder),
-        EditorView.contentAttributes.of({
-          "aria-label": options.label,
-          spellcheck: "true",
-          autocorrect: "on",
-          autocapitalize: "sentences",
-        }),
-        autocompletion({
-          override: [wikiLinkSource(options)],
-          icons: false,
-          maxRenderedOptions: MAX_SUGGESTIONS,
-        }),
-        // Completion handles Enter first; otherwise the window continues lists or saves.
-        Prec.highest(keymap.of([{ key: "Tab", run: acceptCompletion }])),
-        keymap.of([
-          { key: "Shift-Enter", run: insertNewline },
-          // Non-Shift Enter and Escape are handled by the window.
-          ...defaultKeymap.filter(({ key }) => !key?.endsWith("Enter") && key !== "Escape"),
-          ...historyKeymap,
-        ]),
-        readOnly.of(readOnlyState(true)),
-        journalTheme,
-        EditorView.updateListener.of((update) => {
-          if (update.docChanged) options.onChange();
-        }),
-      ],
-    }),
+    state: createState(),
   });
   return {
     view,
@@ -349,6 +351,10 @@ export function createEditor(host: HTMLElement, options: EditorOptions): Journal
         changes: { from: 0, to: view.state.doc.length, insert: text },
         annotations: Transaction.addToHistory.of(false),
       });
+    },
+    reset() {
+      view.setState(createState());
+      options.onChange();
     },
     setReadOnly(value) {
       if (view.state.readOnly === value) return;

@@ -62,6 +62,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   let busy = true;
   let draftLoaded = false;
   let savedPath: string | undefined;
+  let pendingReset: { text: string; message: string; warning: boolean } | undefined;
   let autosaveError: string | undefined;
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   let disposed = false;
@@ -69,6 +70,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   let notesLoadedAt = -Infinity;
   let notesLoading = false;
   let notesStale = false;
+  let notesGeneration = 0;
   const editor = createEditor(entry, {
     placeholder: "Write a journal entry...",
     label: "Journal entry",
@@ -85,7 +87,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   const autosave = createAutosave({
     read: () => editor.value(),
     state() {
-      if (!draftLoaded || savedPath !== undefined) return "disabled";
+      if (!draftLoaded || savedPath !== undefined || pendingReset !== undefined) return "disabled";
       return busy || dialog.isOpen ? "blocked" : "ready";
     },
     save: (text) => api.saveDraft(text),
@@ -133,10 +135,11 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
 
   function render() {
     const blocked = busy || dialog.isOpen;
-    editor.setReadOnly(blocked || !draftLoaded || savedPath !== undefined);
-    checkbox.disabled = blocked || settings === undefined || savedPath !== undefined;
+    const resetting = savedPath !== undefined || pendingReset !== undefined;
+    editor.setReadOnly(blocked || !draftLoaded || resetting);
+    checkbox.disabled = blocked || settings === undefined || resetting;
     formatSelect.disabled = checkbox.disabled;
-    gear.disabled = blocked || savedPath !== undefined;
+    gear.disabled = blocked || resetting;
     journal.toggleAttribute("inert", dialog.isOpen);
     journal.hidden = dialog.isOpen;
     checkbox.checked = settings?.use_yesterday_if_today_missing ?? false;
@@ -158,16 +161,20 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
       return;
     }
     notesLoading = true;
+    const generation = notesGeneration;
     api.listNotes().then(
       (index) => {
+        if (disposed || generation !== notesGeneration) return;
         notes = index.notes;
         if (index.problem) console.warn("note index:", index.problem);
       },
-      (error) => console.warn("note index failed", error),
+      (error) => {
+        if (!disposed && generation === notesGeneration) console.warn("note index failed", error);
+      },
     ).finally(() => {
+      if (disposed || generation !== notesGeneration) return;
       notesLoading = false;
       notesLoadedAt = Date.now();
-      if (disposed) return;
       if (notesStale) {
         notesStale = false;
         loadNotes();
@@ -181,6 +188,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
     try {
       settings = await api.loadSettings();
       note = settings.note ?? undefined;
+      return settings;
     } catch (error) {
       note = undefined;
       throw error;
@@ -223,33 +231,60 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   }
 
   async function save() {
-    if (busy || dialog.isOpen || savedPath !== undefined) return;
+    if (busy || dialog.isOpen) return;
     busy = true;
-    message.textContent = "Saving...";
+    message.textContent = pendingReset === undefined ? "Saving..." : "Resetting...";
     message.className = "";
     render();
     await autosave.idle();
     try {
-      if (!draftLoaded) {
+      if (pendingReset === undefined && !draftLoaded) {
         await restoreDraft();
         message.textContent = "Draft loaded. Press Enter to save or Escape to keep it for later.";
-        busy = false;
-        render();
-        editor.focus();
         return;
       }
-      await reloadSettings();
-      const result = await api.submit(editor.value());
-      savedPath = result.note_path;
+      if (pendingReset === undefined) {
+        const text = editor.value();
+        try {
+          const result = await api.submit(text);
+          savedPath = result.note_path;
+          pendingReset = { text, message: `Saved to ${savedPath}.`, warning: false };
+        } catch (error) {
+          if (typeof error === "object" && error !== null && "code" in error &&
+              error.code === "empty_entry") {
+            pendingReset = { text, message: errorMessage(error), warning: true };
+          } else {
+            const errors = [displayMessage(error)];
+            try {
+              await reloadSettings();
+            } catch (settingsError) {
+              errors.push(displayMessage(settingsError));
+            }
+            showError([...new Set(errors)].join("\n"));
+            return;
+          }
+        }
+      }
+      await api.resetSession(pendingReset.text);
+      const outcome = pendingReset;
+      pendingReset = undefined;
+      savedPath = undefined;
+      draftLoaded = false;
+      autosaveError = undefined;
+      clearTimeout(noticeTimer);
+      autosaveNotice.textContent = "";
+      editor.reset();
+      autosave.reset("");
+      await initialize(outcome);
     } catch (error) {
-      showError(error);
+      showError(pendingReset === undefined ? error :
+        `${pendingReset.message} Could not reset: ${errorMessage(error)} ` +
+        "Press Enter to retry or Escape to close.");
+    } finally {
       busy = false;
       render();
       editor.focus();
-      return;
     }
-    message.textContent = `Saved to ${savedPath}. Closing...`;
-    await close();
   }
 
   async function changeFallback() {
@@ -264,7 +299,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
 
   // Callers read the new value before this runs, because render() restores the controls.
   async function changeSetting(apply: () => Promise<Settings>) {
-    if (busy || dialog.isOpen || savedPath !== undefined) return;
+    if (busy || dialog.isOpen || pendingReset !== undefined || savedPath !== undefined) return;
     busy = true;
     message.textContent = "";
     render();
@@ -282,7 +317,7 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   }
 
   async function openSettings() {
-    if (busy || dialog.isOpen || savedPath !== undefined) return;
+    if (busy || dialog.isOpen || pendingReset !== undefined || savedPath !== undefined) return;
     busy = true;
     render();
     await autosave.idle();
@@ -313,8 +348,8 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
       if (!busy && !event.repeat) void close();
     } else if (event.key === "Enter" && event.target === entry && !event.shiftKey) {
       event.preventDefault();
-      if (!event.repeat && !busy && savedPath === undefined) {
-        if (!draftLoaded || !continueList(editor)) void save();
+      if (!event.repeat && !busy) {
+        if (pendingReset !== undefined || !draftLoaded || !continueList(editor)) void save();
       }
     }
   }
@@ -349,7 +384,16 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
   window.addEventListener("keydown", onKeyDown);
   render();
   editor.focus();
-  async function initialize() {
+  async function initialize(outcome?: { message: string; warning: boolean }) {
+    busy = true;
+    draftLoaded = false;
+    settings = undefined;
+    note = undefined;
+    notes = [];
+    notesLoadedAt = -Infinity;
+    notesLoading = notesStale = false;
+    notesGeneration++;
+    render();
     const errors: string[] = [];
     try {
       await restoreDraft();
@@ -357,15 +401,16 @@ export function mountJournal(root: HTMLElement, api: JournalApi): () => void {
       errors.push(`${errorMessage(error)} Press Enter to retry loading it.`);
     }
     try {
-      await reloadSettings();
-      if (settings?.use_yesterday_if_today_missing && note !== undefined && !note.is_yesterday) {
+      const loaded = await reloadSettings();
+      if (loaded.use_yesterday_if_today_missing && loaded.note !== null && !loaded.note.is_yesterday) {
         settings = await api.setFallback(false);
         note = settings.note ?? undefined;
       }
     } catch (error) {
       errors.push(displayMessage(error));
     }
-    if (errors.length) showError(errors.join("\n"));
+    message.textContent = [outcome?.message, ...errors].filter(Boolean).join("\n");
+    message.className = errors.length || outcome?.warning ? "error" : "";
     busy = false;
     render();
     editor.focus();

@@ -76,6 +76,7 @@ function mockApi() {
       entry_format: form.entry_format,
     })),
     submit: vi.fn<JournalApi["submit"]>().mockResolvedValue({ note_path: "today.md" }),
+    resetSession: vi.fn<JournalApi["resetSession"]>().mockResolvedValue(undefined),
     exit: vi.fn<JournalApi["exit"]>().mockResolvedValue(undefined),
     startDragging: vi.fn<JournalApi["startDragging"]>().mockResolvedValue(undefined),
     setWindowHeight: vi.fn<JournalApi["setWindowHeight"]>().mockResolvedValue(undefined),
@@ -379,18 +380,167 @@ describe("Yesterday availability indicator", () => {
   });
 });
 
+describe("session refresh", () => {
+  it.each(["", " \t\n "])("warns and refreshes startup state on empty submission %j", async (text) => {
+    const api = mockApi();
+    const warning = "Journal text cannot be empty.";
+    api.submit.mockRejectedValue({ code: "empty_entry", message: warning });
+    const { entry, message, noteName, checkbox, formatSelect, wordCount } = await setup(api);
+    const refreshed: Settings = {
+      ...initial, note: { name: "2026-09-27", is_yesterday: false },
+      entry_format: "block", use_yesterday_if_today_missing: true,
+    };
+    api.loadSettings.mockResolvedValue(refreshed);
+    api.setFallback.mockResolvedValue({ ...refreshed, use_yesterday_if_today_missing: false });
+    entry.value = text;
+    key(entry, "Enter");
+    await flush();
+    expect(api.submit).toHaveBeenCalledExactlyOnceWith(text);
+    expect(api.resetSession).toHaveBeenCalledExactlyOnceWith(text);
+    expect(api.loadDraft).toHaveBeenCalledTimes(2);
+    expect(api.loadSettings).toHaveBeenCalledTimes(2);
+    expect(api.listNotes).toHaveBeenCalledTimes(2);
+    expect(api.setFallback).toHaveBeenCalledExactlyOnceWith(false);
+    expect(noteName.textContent).toBe("2026-09-27");
+    expect(checkbox.checked).toBe(false);
+    expect(formatSelect.value).toBe("block");
+    expect(entry.value).toBe("");
+    expect(entry.readOnly).toBe(false);
+    expect(document.activeElement).toBe(entry);
+    expect(wordCount.textContent).toBe("0 words");
+    expect(message.textContent).toBe(warning);
+    expect(message.className).toBe("error");
+    expect(api.exit).not.toHaveBeenCalled();
+  });
+
+  it("refreshes empty input even with invalid configuration and reports both problems", async () => {
+    const api = mockApi();
+    api.loadSettings.mockRejectedValue({ code: "configuration", message: "Invalid config" });
+    api.submit.mockRejectedValue({ code: "empty_entry", message: "Journal text cannot be empty." });
+    const { entry, message, gear, checkbox, noteName } = await setup(api);
+    key(entry, "Enter");
+    await flush();
+    expect(api.resetSession).toHaveBeenCalledExactlyOnceWith("");
+    expect(message.textContent).toBe("Journal text cannot be empty.\nConfig error!");
+    expect(entry.readOnly).toBe(false);
+    expect(gear.disabled).toBe(false);
+    expect(checkbox.disabled).toBe(true);
+    expect(noteName.textContent).toBe("No File Selected");
+    expect(api.exit).not.toHaveBeenCalled();
+  });
+
+  it("retries cleanup of an empty submission without submitting it again", async () => {
+    const api = mockApi();
+    api.submit.mockRejectedValue({ code: "empty_entry", message: "Journal text cannot be empty." });
+    api.resetSession.mockRejectedValueOnce(new Error("Cannot clear draft"));
+    const { entry, message } = await setup(api);
+    entry.value = " \t ";
+    key(entry, "Enter");
+    await flush();
+    expect(message.textContent).toContain("Cannot clear draft");
+    expect(entry.readOnly).toBe(true);
+    key(entry, "Enter");
+    await flush();
+    expect(api.submit).toHaveBeenCalledOnce();
+    expect(api.resetSession).toHaveBeenCalledTimes(2);
+    expect(entry.value).toBe("");
+    expect(entry.readOnly).toBe(false);
+    expect(message.textContent).toBe("Journal text cannot be empty.");
+  });
+
+  it("blocks competing actions and old autosave timers through cleanup and initialization", async () => {
+    const api = mockApi();
+    let reset!: () => void;
+    let load!: (settings: Settings) => void;
+    api.resetSession.mockReturnValue(new Promise((resolve) => { reset = resolve; }));
+    const { entry, checkbox, formatSelect, gear } = await setupWithFakeTimers(api);
+    api.loadSettings.mockReturnValueOnce(new Promise((resolve) => { load = resolve; }));
+    type(entry, "first");
+    key(entry, "Enter");
+    await tick();
+    expect(api.resetSession).toHaveBeenCalledExactlyOnceWith("first");
+    key(entry, "Enter");
+    key(entry, "Escape");
+    gear.click();
+    await tick(AUTOSAVE_MAX_WAIT_MS);
+    expect(entry.readOnly).toBe(true);
+    expect(checkbox.disabled).toBe(true);
+    expect(formatSelect.disabled).toBe(true);
+    expect(api.submit).toHaveBeenCalledOnce();
+    expect(api.saveDraft).not.toHaveBeenCalled();
+    expect(api.exit).not.toHaveBeenCalled();
+    expect(api.readSettingsForm).not.toHaveBeenCalled();
+    reset();
+    await tick();
+    expect(entry.value).toBe("");
+    expect(entry.readOnly).toBe(true);
+    key(entry, "Enter");
+    expect(api.submit).toHaveBeenCalledOnce();
+    load(initial);
+    await tick();
+    expect(entry.readOnly).toBe(false);
+    expect(checkbox.disabled).toBe(false);
+    expect(formatSelect.disabled).toBe(false);
+    expect(api.saveDraft).not.toHaveBeenCalled();
+    expect(api.exit).not.toHaveBeenCalled();
+  });
+
+  it("protects a draft that fails to load during reset and allows recovery without resubmitting", async () => {
+    const api = mockApi();
+    const { entry, message } = await setupWithFakeTimers(api);
+    api.loadDraft.mockRejectedValueOnce(new Error("Cannot read draft"));
+    type(entry, "logged");
+    key(entry, "Enter");
+    await tick();
+    expect(entry.value).toBe("");
+    expect(entry.readOnly).toBe(true);
+    expect(message.textContent).toBe(
+      "Saved to today.md.\nCannot read draft Press Enter to retry loading it.",
+    );
+    await tick(AUTOSAVE_MAX_WAIT_MS);
+    expect(api.saveDraft).not.toHaveBeenCalled();
+    api.loadDraft.mockResolvedValue("recovered");
+    key(entry, "Enter");
+    await tick();
+    expect(entry.value).toBe("recovered");
+    expect(entry.readOnly).toBe(false);
+    expect(api.submit).toHaveBeenCalledOnce();
+    expect(api.resetSession).toHaveBeenCalledOnce();
+  });
+});
+
 describe("minimal journal window", () => {
-  it("focuses the draft, submits original multiline input, and exits on success", async () => {
-    const { api, entry, wordCount } = await setup();
+  it("submits consecutive entries and starts a fresh focused session without exiting", async () => {
+    const { api, entry, wordCount, message, checkbox, formatSelect, gear } = await setup();
     expect(document.activeElement).toBe(entry);
     entry.value = "  first\nsecond  ";
     expect(wordCount.textContent).toBe("2 words");
     expect(key(entry, "Enter").defaultPrevented).toBe(true);
     await flush();
     expect(api.submit).toHaveBeenCalledExactlyOnceWith("  first\nsecond  ");
-    expect(api.exit).toHaveBeenCalledOnce();
-    expect(api.exit).toHaveBeenCalledWith(undefined);
-    expect(entry.readOnly).toBe(true);
+    expect(api.resetSession).toHaveBeenCalledExactlyOnceWith("  first\nsecond  ");
+    expect(api.exit).not.toHaveBeenCalled();
+    expect(entry.value).toBe("");
+    expect(entry.readOnly).toBe(false);
+    expect(document.activeElement).toBe(entry);
+    expect(wordCount.textContent).toBe("0 words");
+    expect(message.textContent).toBe("Saved to today.md.");
+    expect(checkbox.disabled).toBe(false);
+    expect(formatSelect.disabled).toBe(false);
+    expect(gear.disabled).toBe(false);
+    entry.view.dispatch({ changes: { from: 0, insert: "next" }, userEvent: "input.type" });
+    key(entry.content, "Enter");
+    await flush();
+    expect(api.submit.mock.calls).toEqual([["  first\nsecond  "], ["next"]]);
+    expect(api.resetSession.mock.calls).toEqual([["  first\nsecond  "], ["next"]]);
+    expect(entry.value).toBe("");
+    expect(undo(entry.view)).toBe(false);
+    expect(redo(entry.view)).toBe(false);
+    expect(api.loadDraft).toHaveBeenCalledTimes(3);
+    expect(api.loadSettings).toHaveBeenCalledTimes(3);
+    expect(api.listNotes).toHaveBeenCalledTimes(3);
+    expect(api.onCloseRequested).toHaveBeenCalledOnce();
+    expect(api.exit).not.toHaveBeenCalled();
   });
 
   it("leaves Shift+Enter and IME input alone and ignores repeated Enter", async () => {
@@ -511,7 +661,9 @@ describe("minimal journal window", () => {
     expect(api.exit).not.toHaveBeenCalled();
     resolve({ note_path: "today.md" });
     await flush();
-    expect(api.exit).toHaveBeenCalledOnce();
+    expect(api.exit).not.toHaveBeenCalled();
+    expect(api.resetSession).toHaveBeenCalledOnce();
+    expect(entry.readOnly).toBe(false);
   });
 
   it("persists a changed checkbox and restores it in a new window", async () => {
@@ -632,8 +784,9 @@ describe("minimal journal window", () => {
     expect((await setup(api)).formatSelect.value).toBe("block");
   });
 
-  it("disables the format dropdown during a write, after saving, and without settings", async () => {
+  it("disables the format dropdown during a write, a failed reset, and without settings", async () => {
     const api = mockApi();
+    api.resetSession.mockRejectedValue(new Error("Cannot clear draft"));
     let resolve!: (result: SavedEntry) => void;
     api.submit.mockReturnValue(new Promise((done) => { resolve = done; }));
     const { entry, formatSelect } = await setup(api);
@@ -708,19 +861,24 @@ describe("minimal journal window", () => {
 
   it("blocks logging with bad configuration and recovers without losing the draft", async () => {
     const api = mockApi();
-    api.loadSettings.mockRejectedValue({ message: "Fix config.json" });
+    const error = { message: "Fix config.json" };
+    api.loadSettings.mockRejectedValue(error);
+    api.submit.mockRejectedValue(error);
     const { entry, checkbox, message } = await setup(api);
     entry.value = "draft";
     expect(checkbox.disabled).toBe(true);
     key(entry, "Enter");
     await flush();
     expect(message.textContent).toBe("Fix config.json");
-    expect(api.submit).not.toHaveBeenCalled();
+    expect(api.submit).toHaveBeenCalledExactlyOnceWith("draft");
+    expect(api.resetSession).not.toHaveBeenCalled();
     expect(entry.value).toBe("draft");
     api.loadSettings.mockResolvedValue(initial);
+    api.submit.mockResolvedValue({ note_path: "today.md" });
     key(entry, "Enter");
     await flush();
-    expect(api.submit).toHaveBeenCalledExactlyOnceWith("draft");
+    expect(api.submit.mock.calls).toEqual([["draft"], ["draft"]]);
+    expect(api.resetSession).toHaveBeenCalledOnce();
   });
 
   it("shows only \"Config error!\" for configuration problems", async () => {
@@ -740,6 +898,7 @@ describe("minimal journal window", () => {
       "plugin_disabled", "plugin_settings", "date_format", "note_path",
     ]) {
       api.loadSettings.mockRejectedValueOnce({ code, message: "details" });
+      api.submit.mockRejectedValueOnce({ code, message: "details" });
       key(entry, "Enter");
       await flush();
       expect(message.textContent, code).toBe("Config error!");
@@ -805,22 +964,44 @@ describe("minimal journal window", () => {
     }
   });
 
-  it("never resubmits after a successful save if exiting fails", async () => {
+  it("retries a failed reset after logging without resubmitting the entry", async () => {
     const api = mockApi();
-    api.exit.mockRejectedValue(new Error("Cannot exit"));
-    const { entry, message } = await setup(api);
+    api.resetSession.mockRejectedValue(new Error("Cannot clear draft"));
+    const { entry, message, checkbox, gear } = await setup(api);
+    entry.value = "logged";
     key(entry, "Enter");
     await flush();
     expect(message.textContent).toContain("Saved to today.md");
-    expect(message.textContent).toContain("Cannot exit");
+    expect(message.textContent).toContain("Cannot clear draft");
+    expect(entry.readOnly).toBe(true);
+    expect(checkbox.disabled).toBe(true);
+    expect(gear.disabled).toBe(true);
     key(entry, "Enter");
     await flush();
     expect(api.submit).toHaveBeenCalledOnce();
-    api.exit.mockResolvedValue(undefined);
+    expect(api.resetSession).toHaveBeenCalledTimes(2);
+    expect(api.exit).not.toHaveBeenCalled();
+    api.resetSession.mockResolvedValue(undefined);
+    key(entry, "Enter");
+    await flush();
+    expect(api.submit).toHaveBeenCalledOnce();
+    expect(api.resetSession).toHaveBeenCalledTimes(3);
+    expect(entry.value).toBe("");
+    expect(entry.readOnly).toBe(false);
+    expect(message.textContent).toBe("Saved to today.md.");
+  });
+
+  it("Escape after a failed reset never restores the already logged text", async () => {
+    const api = mockApi();
+    api.resetSession.mockRejectedValue(new Error("Cannot clear draft"));
+    const { entry } = await setup(api);
+    entry.value = "logged";
+    key(entry, "Enter");
+    await flush();
     key(entry, "Escape");
     await flush();
-    expect(api.exit).toHaveBeenCalledTimes(2);
-    expect(api.exit).toHaveBeenLastCalledWith(undefined);
+    expect(api.submit).toHaveBeenCalledOnce();
+    expect(api.exit).toHaveBeenCalledExactlyOnceWith(undefined);
   });
 
   it("shows today's note name in the status row", async () => {
@@ -1070,9 +1251,8 @@ describe("minimal journal window", () => {
     expect(document.activeElement).toBe(entry);
   });
 
-  it("disables the gear during a save and after an entry is logged", async () => {
+  it("disables the gear during a save and reopens Settings in the next session", async () => {
     const api = mockApi();
-    api.exit.mockRejectedValue(new Error("Cannot exit"));
     let resolve!: (result: SavedEntry) => void;
     api.submit.mockReturnValue(new Promise((done) => { resolve = done; }));
     const { entry, gear } = await setup(api);
@@ -1081,10 +1261,11 @@ describe("minimal journal window", () => {
     expect(gear.disabled).toBe(true);
     resolve({ note_path: "today.md" });
     await flush();
-    expect(gear.disabled).toBe(true);
+    expect(gear.disabled).toBe(false);
     gear.click();
     await flush();
-    expect(api.readSettingsForm).not.toHaveBeenCalled();
+    expect(api.readSettingsForm).toHaveBeenCalledOnce();
+    expect(api.listHeadings).toHaveBeenCalledOnce();
   });
 
   it("lists End of file and the note's headings, selecting the saved one", async () => {
@@ -1347,7 +1528,8 @@ describe("list-aware keyboard handling", () => {
     key(entry.content, "Enter");
     await flush();
     expect(api.submit).toHaveBeenCalledExactlyOnceWith("- first #tag\n\n");
-    expect(api.exit).toHaveBeenCalledOnce();
+    expect(api.exit).not.toHaveBeenCalled();
+    expect(entry.value).toBe("");
   });
 
   it("does not continue an earlier item across a blank separator", async () => {
@@ -1406,9 +1588,9 @@ describe("list-aware keyboard handling", () => {
     expect(api.submit).not.toHaveBeenCalled();
   });
 
-  it("never edits or resubmits a list after logging when closing fails", async () => {
+  it("never edits or resubmits a list after logging when resetting fails", async () => {
     const api = mockApi();
-    api.exit.mockRejectedValue(new Error("Cannot close"));
+    api.resetSession.mockRejectedValue(new Error("Cannot clear draft"));
     const { entry } = await setup(api);
     list(entry, "- first\n\n");
     key(entry.content, "Enter");
@@ -1501,10 +1683,10 @@ describe("draft autosave", () => {
     expect(api.saveDraft).not.toHaveBeenCalled();
   });
 
-  it("stops autosaving once the entry is logged", async () => {
+  it("stops autosaving a logged entry until reset succeeds, then saves only new text", async () => {
     const api = mockApi();
-    api.exit.mockRejectedValue(new Error("Cannot exit"));
-    const { entry } = await setupWithFakeTimers(api);
+    api.resetSession.mockRejectedValue(new Error("Cannot clear draft"));
+    const { entry, notice } = await setupWithFakeTimers(api);
     entry.value = "logged";
     key(entry, "Enter");
     await tick();
@@ -1514,6 +1696,19 @@ describe("draft autosave", () => {
     window.dispatchEvent(new Event("blur"));
     await tick(AUTOSAVE_MAX_WAIT_MS);
     expect(api.saveDraft).not.toHaveBeenCalled();
+    api.resetSession.mockResolvedValue(undefined);
+    key(entry, "Enter");
+    await tick();
+    expect(notice.textContent).toBe("");
+    expect(entry.value).toBe("");
+    await tick(AUTOSAVE_MAX_WAIT_MS);
+    expect(api.saveDraft).not.toHaveBeenCalled();
+    type(entry, "new draft");
+    await tick(AUTOSAVE_DELAY_MS);
+    expect(api.saveDraft).toHaveBeenCalledExactlyOnceWith("new draft");
+    key(entry, "Escape");
+    await tick();
+    expect(api.exit).toHaveBeenCalledExactlyOnceWith("new draft");
   });
 
   it("waits while the settings dialog is open and saves after it closes", async () => {
@@ -1543,7 +1738,8 @@ describe("draft autosave", () => {
     resolve();
     await tick();
     expect(api.submit).toHaveBeenCalledExactlyOnceWith("racing");
-    expect(api.exit).toHaveBeenCalledOnce();
+    expect(api.resetSession).toHaveBeenCalledExactlyOnceWith("racing");
+    expect(api.exit).not.toHaveBeenCalled();
 
     const other = mockApi();
     let finish!: () => void;
@@ -1660,7 +1856,8 @@ describe("draft autosave", () => {
     expect(api.exit).not.toHaveBeenCalled();
     resolve({ note_path: "today.md" });
     await tick();
-    expect(api.exit).toHaveBeenCalledExactlyOnceWith(undefined);
+    expect(api.exit).not.toHaveBeenCalled();
+    expect(api.resetSession).toHaveBeenCalledOnce();
   });
 
   it("unsubscribes from close requests on unmount", async () => {
@@ -1789,6 +1986,27 @@ describe("[[ note link suggestions", () => {
     } finally {
       clock.mockRestore();
     }
+  });
+
+  it("uses the fresh session's notes even if the previous index finishes later", async () => {
+    const api = mockApi();
+    let oldIndex!: (index: NoteIndex) => void;
+    api.listNotes.mockReturnValueOnce(new Promise((resolve) => { oldIndex = resolve; }))
+      .mockResolvedValue({
+        notes: [{ name: "Fresh", folder: "New", link: "New/Fresh" }], problem: null,
+      });
+    const { entry } = await setup(api);
+    entry.value = "first";
+    key(entry, "Enter");
+    await flush();
+    expect(api.listNotes).toHaveBeenCalledTimes(2);
+    await suggest(entry, "[[fr");
+    expect(suggestions(entry)).toEqual(["New/Fresh"]);
+    oldIndex(vaultNotes);
+    await new Promise((resolve) => setTimeout(resolve, SUGGEST_MS));
+    expect(suggestions(entry)).toEqual(["New/Fresh"]);
+    key(entry.content, "Enter");
+    expect(entry.value).toBe("[[New/Fresh]]");
   });
 
   it("shows notes that load after [[ was typed", async () => {

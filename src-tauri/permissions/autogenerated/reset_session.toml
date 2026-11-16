@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-reset-session"
+description = "Enables the reset_session command without any pre-configured scope."
+commands.allow = ["reset_session"]
+
+[[permission]]
+identifier = "deny-reset-session"
+description = "Denies the reset_session command without any pre-configured scope."
+commands.deny = ["reset_session"]

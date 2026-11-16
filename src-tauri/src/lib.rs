@@ -26,6 +26,7 @@ pub fn run() {
             commands::pick_vault_folder,
             commands::save_settings,
             commands::submit_entry,
+            commands::reset_session,
             commands::request_exit,
         ])
         .on_window_event(|window, event| {

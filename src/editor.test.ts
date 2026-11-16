@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { undo } from "@codemirror/commands";
+import { redo, undo } from "@codemirror/commands";
 import { EditorView } from "@codemirror/view";
 import type { NoteLink } from "./api";
 import {
@@ -192,6 +192,26 @@ describe("Markdown formatting", () => {
   it("leaves other Markdown unstyled", () => {
     const view = render("# Heading\n~~strike~~ `code` ==mark==\nsnake_case_word > quote");
     expect(view.texts("[class*='cm-md-']")).toEqual([]);
+  });
+
+  it("resets the document and its history before editing the next entry", () => {
+    const { editor } = render("restored");
+    editor.setReadOnly(false);
+    editor.view.dispatch({
+      changes: { from: editor.value().length, insert: " first" },
+      userEvent: "input.type",
+    });
+    expect(undo(editor.view)).toBe(true);
+    editor.reset();
+    expect(editor.value()).toBe("");
+    expect(editor.view.state.selection.main.head).toBe(0);
+    expect(undo(editor.view)).toBe(false);
+    expect(redo(editor.view)).toBe(false);
+    editor.setReadOnly(false);
+    editor.view.dispatch({ changes: { from: 0, insert: "next" }, userEvent: "input.type" });
+    expect(undo(editor.view)).toBe(true);
+    expect(editor.value()).toBe("");
+    expect(undo(editor.view)).toBe(false);
   });
 
   describe("list Enter", () => {

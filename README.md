@@ -9,7 +9,11 @@ at runtime.
 
 Launch normally and type into the focused text box.
 
-- **Enter** saves and exits outside lists. Inside a `-`/`*`/`+` bullet list or
+- **Enter** saves outside lists, clears the editor, and starts a fresh session
+  in the same window without exiting. Settings and daily-note selection reload,
+  just as at startup. Empty or whitespace-only submissions show
+  **Journal text cannot be empty.**, clear the editor, and refresh the session
+  without writing to a note. Inside a `-`/`*`/`+` bullet list or
   `1.`/`1)` numbered list, it creates the next item with the same indentation
   (and the next number), including from indented continuation lines.
   Enter on an empty item removes its marker and exits the entire list, leaving
@@ -46,9 +50,10 @@ Launch normally and type into the focused text box.
     `.obsidian` and `.trash`; symlinked folders are not followed, and at most
     20,000 notes are listed. Only file names are read, never note contents.
     Headings (`#`), block references, aliases, and attachments are not offered.
-  - The list is read at startup and after saving settings, and reloaded in the
-    background when you type `[[` more than 30 seconds after the last read. If the
-    vault or configuration cannot be read, no list appears and typing is unaffected.
+  - The list is read at startup, after each session reset, and after saving
+    settings, and reloaded in the background when you type `[[` more than
+    30 seconds after the last read. If the vault or configuration cannot be read,
+    no list appears and typing is unaffected.
 - **Escape** keeps the current text as a draft and exits without logging it.
   The draft is restored on the next launch. Closing is blocked during an active operation.
 - The draft **autosaves** 1 second after you stop typing (and at least every
@@ -56,10 +61,10 @@ Launch normally and type into the focused text box.
   focus. A brief **Draft saved** appears beside the file name.
 - **Yesterday** is initially unchecked and uses yesterday's note only if
   today's is missing. Changes persist immediately. Today always takes priority.
-  At launch, if today's note exists,
+  At launch and after each session reset, if today's note exists,
   the box is unchecked and saved; tick it again if you need it.
-  Selections made during use are not automatically reset. If today's note exists
-  and the box is checked, its label and checkbox turn red with the tooltip
+  Selections made during an entry are not automatically reset. If today's note
+  exists and the box is checked, its label and checkbox turn red with the tooltip
   **Today's file exists**; you can uncheck it yourself.
 - The **Inline/Block dropdown** (next to Yesterday) switches the entry format
   and persists immediately. **Inline** logs `[1:05pm] text`; **Block** logs a block
@@ -83,7 +88,8 @@ Launch normally and type into the focused text box.
   the dialog and grows to fit it without scrolling; drag the **Settings** title
   to move it. Escape or Cancel closes the dialog, returning the window to its
   normal size, without exiting; Enter does not log the entry while it is open.
-- Errors retain the draft. Failed preference writes restore the saved control value.
+- Failed journal writes retain the draft. Failed preference writes restore the
+  saved control value.
   Any configuration problem (missing or invalid `config.json`, vault, or
   daily-notes plugin settings) shows just **Config error!**; open the gear to
   see the details and fix them. Other errors, such as a missing daily note or
@@ -96,10 +102,13 @@ Drafts are stored as UTF-8 plaintext in `draft.txt` beside `config.json`, not in
 the journal. They work even when vault configuration is missing or invalid.
 Autosave and Escape preserve all text, including whitespace and line breaks; dismissing an
 empty text box (or autosaving one) removes the previous draft. A successful
-journal save clears the
-draft before exiting. If saving or clearing the draft fails, the window stays
-open with an error; a journal entry that has already been saved cannot be
-submitted again. Fix the storage problem and press Escape to retry closing.
+journal save clears the draft before starting the next session. Each new session
+also clears undo/redo history so a logged entry cannot be restored accidentally.
+If clearing the draft fails, the window stays open with editing blocked and an
+error; a journal entry that has already been saved cannot be submitted again.
+Fix the storage problem and press Enter to retry cleanup and reset, or Escape
+to retry cleanup and exit. Other failed journal writes preserve the entry for
+retry without resetting the session.
 
 If a draft cannot be read at startup, editing is blocked to avoid overwriting it.
 Correct the storage problem and press Enter to reload, or Escape to exit leaving
@@ -145,7 +154,8 @@ option to choose a different settings file.
   Pick new settings and **Save** to replace the file. Unknown fields are dropped.
 
 Settings are validated before anything is written; save errors stay in the dialog
-and never affect your draft. Settings cannot be changed after an entry is logged.
+and never affect your draft. Settings are available again once the session reset
+finishes after logging.
 
 You can also edit the file by hand. The settings dialog shows the file's exact
 path and lists its problems:

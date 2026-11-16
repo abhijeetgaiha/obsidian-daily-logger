@@ -91,6 +91,7 @@ export interface JournalApi {
   pickVaultFolder(current: string | null): Promise<string | null>;
   saveSettings(form: SettingsForm): Promise<Settings>;
   submit(text: string): Promise<SavedEntry>;
+  resetSession(text: string): Promise<void>;
   exit(text?: string): Promise<void>;
   startDragging(): Promise<void>;
   /** Sets the window height in logical pixels; the width stays fixed. */
@@ -112,6 +113,7 @@ export const api: JournalApi = {
   pickVaultFolder: (current) => invoke<string | null>("pick_vault_folder", { current }),
   saveSettings: (form) => invoke<Settings>("save_settings", { form }),
   submit: (text) => invoke<SavedEntry>("submit_entry", { text }),
+  resetSession: (text) => invoke<void>("reset_session", { text }),
   exit: (text) => invoke<void>("request_exit", { text: text ?? null }),
   startDragging: () => getCurrentWindow().startDragging(),
   setWindowHeight: (height) =>

@@ -12,6 +12,7 @@ fn main() {
             "pick_vault_folder",
             "save_settings",
             "submit_entry",
+            "reset_session",
             "request_exit",
         ]),
     ))
